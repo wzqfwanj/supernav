@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# 本地配置（含高德 Key，禁止提交）
+config.local.json
+.env
+
+# 运行产物
+*.log
+.pids/
+verify/artifacts/
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
