@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SuperNav · 交通规划</title>
+  <meta name="description" content="SuperNav 交通规划：自由组合步行、骑行、公交/地铁、打车、驾车，逐段计算路费并汇总全程合计。">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <script>
+    (function () {
+      try {
+        var saved = window.localStorage.getItem('supernav-theme');
+        if (saved !== 'light' && saved !== 'gray' && saved !== 'dark') {
+          saved = 'light';
+        }
+        document.documentElement.setAttribute('data-theme', saved);
+      } catch (error) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span class="brand-text">
+          <span class="brand-name">SuperNav</span>
+          <span class="brand-sub">交通规划</span>
+        </span>
+      </div>
+      <div class="theme-switch" id="theme-switch" role="group" aria-label="主题切换">
+        <button type="button" class="theme-option" data-theme-choice="light" aria-pressed="true">明</button>
+        <button type="button" class="theme-option" data-theme-choice="gray" aria-pressed="false">灰</button>
+        <button type="button" class="theme-option" data-theme-choice="dark" aria-pressed="false">暗</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="shell">
+    <div class="demo-banner" id="demo-banner" role="status" hidden>
+      <span class="demo-tag">演示模式</span>
+      <span class="demo-text">未配置高德 Key，路线与费用为模拟数据；配置 Key 后自动切换为真实数据。</span>
+      <span class="demo-reason" id="demo-banner-reason" hidden></span>
+    </div>
+
+    <div class="status-notice" id="status-notice" role="status" hidden>
+      <span class="status-notice-text" id="status-notice-text"></span>
+      <button type="button" class="btn btn-small" id="status-retry">重试连接</button>
+    </div>
+
+    <section class="card planner" aria-labelledby="planner-title">
+      <div class="card-head">
+        <h2 id="planner-title">规划行程</h2>
+        <p class="card-sub">起点、途经点、终点逐段搭配交通方式，自动汇总全程路费。</p>
+      </div>
+      <form id="plan-form" novalidate autocomplete="off">
+        <div class="points-list" id="points-list"></div>
+        <p class="field-hint" id="points-hint"></p>
+        <div class="form-actions">
+          <button type="button" class="btn" id="add-point">＋ 添加途经点</button>
+          <button type="submit" class="btn btn-primary" id="submit-btn" aria-busy="false">
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="submit-label">开始规划</span>
+          </button>
+        </div>
+      </form>
+      <div class="examples">
+        <span class="examples-title">快捷示例</span>
+        <div class="example-list" id="example-list"></div>
+      </div>
+    </section>
+
+    <details class="card settings" id="pricing-settings">
+      <summary class="settings-summary">
+        <span class="settings-title">计价设置</span>
+        <span class="settings-note">默认值读取自 /api/status</span>
+      </summary>
+      <div class="settings-grid">
+        <label class="field">
+          <span class="field-label">油价（元/L）</span>
+          <input type="number" id="fuel-price" min="0" max="30" step="0.1" inputmode="decimal">
+        </label>
+        <label class="field">
+          <span class="field-label">油耗（L/100km）</span>
+          <input type="number" id="fuel-consumption" min="0" max="50" step="0.1" inputmode="decimal">
+        </label>
+        <label class="field">
+          <span class="field-label">公交换乘策略</span>
+          <select id="transit-strategy"></select>
+        </label>
+      </div>
+      <div class="settings-actions">
+        <p class="field-hint">油价与油耗只影响「驾车」段；换乘策略只影响「公交/地铁」段。</p>
+        <button type="button" class="btn btn-small" id="reset-options">恢复默认</button>
+      </div>
+    </details>
+
+    <section class="alert" id="alert" role="alert" tabindex="-1" hidden>
+      <div class="alert-body">
+        <p class="alert-message" id="alert-message"></p>
+        <p class="alert-hint" id="alert-hint" hidden></p>
+      </div>
+      <div class="alert-actions">
+        <button type="button" class="btn btn-small" id="alert-retry">重试</button>
+        <button type="button" class="btn btn-small btn-quiet" id="alert-dismiss">关闭</button>
+      </div>
+    </section>
+
+    <section class="result" id="result" aria-live="polite" hidden>
+      <div class="card totals-card">
+        <div class="totals-head">
+          <h2>全程合计</h2>
+          <span class="source-badge" id="result-source" data-mode="unknown">来源：未标注</span>
+        </div>
+        <p class="totals-combo" id="totals-combo" hidden></p>
+        <div class="totals-main">
+          <div class="stat">
+            <span class="stat-label">总里程</span>
+            <strong class="stat-value" id="totals-distance">—</strong>
+          </div>
+          <div class="stat">
+            <span class="stat-label">总耗时</span>
+            <strong class="stat-value" id="totals-duration">—</strong>
+          </div>
+          <div class="stat stat-cost">
+            <span class="stat-label">总路费</span>
+            <strong class="stat-value" id="totals-cost">—</strong>
+          </div>
+        </div>
+        <div class="totals-breakdown-wrap">
+          <h3 class="breakdown-title">费用明细</h3>
+          <ul class="breakdown" id="totals-breakdown"></ul>
+        </div>
+        <p class="totals-foot" id="generated-at" hidden></p>
+      </div>
+
+      <section class="card route-card" id="route-section" aria-labelledby="route-title" hidden>
+        <div class="card-head">
+          <h2 id="route-title">路线示意</h2>
+          <p class="card-sub">根据返回的 polyline 绘制的示意图，不代表真实比例。</p>
+        </div>
+        <div class="route-canvas" id="route-canvas"></div>
+        <ul class="route-legend" id="route-legend"></ul>
+      </section>
+
+      <section class="legs-section" aria-labelledby="legs-title">
+        <div class="legs-head">
+          <h2 id="legs-title">逐段明细</h2>
+          <span class="legs-count" id="legs-count"></span>
+        </div>
+        <div class="legs-list" id="legs-list"></div>
+      </section>
+
+      <p class="foot-note">费用由后端按接口数据计算，仅供出行估算，实际以运营方为准。</p>
+    </section>
+
+    <section class="card empty-state" id="empty-state">
+      <p class="empty-title">还没有规划结果</p>
+      <p class="empty-text">填写起点与终点（可添加途经点），为每段选择交通方式，然后点击「开始规划」。</p>
+    </section>
+  </main>
+
+  <footer class="footer shell">
+    <span>SuperNav · 交通规划 MVP</span>
+    <span>路费估算仅供参考</span>
+  </footer>
+
+  <noscript>
+    <p class="noscript">本页面需要启用 JavaScript 才能进行交通规划。</p>
+  </noscript>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

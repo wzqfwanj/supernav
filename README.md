@@ -12,6 +12,16 @@
 - 高德 Key 未配置时自动进入**演示模式**（模拟数据，界面明确标注），配置后使用真实高德路线。
 - 纯 HTML/CSS/JS 前端 + Python(FastAPI) 后端，无前端构建步骤、无外部 CDN。
 
+## 界面预览
+
+演示模式（明主题）：
+
+![SuperNav 交通规划（明主题）](docs/screenshot-light.png)
+
+暗主题：
+
+![SuperNav 交通规划（暗主题）](docs/screenshot-dark.png)
+
 ## 快速开始
 
 要求：Python 3.10+。
@@ -62,20 +72,34 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 backend/          FastAPI 应用、高德客户端、费用计算、演示数据
 web/              前端页面（index.html / styles.css / app.js）
-docs/             接口契约、后续说明
+docs/             接口契约、界面截图
 tests/            后端单元测试
 verify/           独立验证脚本与报告（非业务代码）
+scripts/          Lead 验收脚本（acceptance.py）
 run.ps1           本地启动脚本
 config.local.example.json  本地 Key 配置示例
 ```
 
 接口契约见 [docs/API-CONTRACT.md](docs/API-CONTRACT.md)。
 
-## 测试
+## 测试与验收
 
 ```powershell
+# 后端单元测试（离线，mock 高德接口）
 python -m pytest -q
+
+# 启动服务后做黑盒验收（演示模式）
+python scripts/acceptance.py
+
+# 独立验证（verifier 输出，含验证报告）
+python verify/smoke.py
 ```
+
+## 当前状态
+
+- 演示模式后端单测、黑盒验收、独立验证已通过；页面已用 headless Chrome 实际渲染截图确认（明/暗主题）。
+- **真实高德数据尚未联调**：当前环境没有高德 Key。按上文配置 Key 后重启服务即可切换真实路线；如真实 v5 响应字段与文档有出入，可能需要小幅调整解析（已做多层容错）。
+- 在线部署、GitHub 发布按开发规则**待确认后**再执行。
 
 ## 后续（按开发规则，须先与用户确认）
 
