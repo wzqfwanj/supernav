@@ -131,20 +131,30 @@ def resolve_points_demo(points_spec: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def resolve_points_live(points_spec: list[dict[str, Any]], client: amap.AmapClient) -> list[dict[str, Any]]:
-    """真实模式：address 走地理编码（同一请求内去重），location 直接使用。"""
+    """真实模式：address 走地理编码（同一请求内去重）；location 逆地理编码补全城市信息。"""
     cache: dict[str, dict[str, Any]] = {}
     resolved: list[dict[str, Any]] = []
     for spec in points_spec:
         if spec["location"] is not None:
             lng, lat = spec["location"]
             name = spec.get("name") or ""
+            location_text = format_location(lng, lat)
+            # 浏览器定位只给经纬度：逆地理编码补全地址/城市/citycode（公交规划需要 citycode）
+            geo: dict[str, Any] = {}
+            try:
+                geo = client.regeo(location_text)
+            except ApiError:
+                geo = {}
+            # 调用方未显式命名（name 为空或回显坐标）时，用逆地理编码地址展示
+            explicit_name = name if name and name != spec.get("input") else ""
+            display_name = explicit_name or geo.get("formatted_address") or name
             resolved.append(
                 {
                     "input": spec["input"],
-                    "name": name,
-                    "formatted_address": name,
-                    "city": "",
-                    "citycode": "",
+                    "name": display_name,
+                    "formatted_address": geo.get("formatted_address") or display_name,
+                    "city": geo.get("city") or "",
+                    "citycode": geo.get("citycode") or "",
                     "location": {"lng": round(float(lng), 6), "lat": round(float(lat), 6)},
                 }
             )

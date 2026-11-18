@@ -158,6 +158,22 @@ GEOCODE_BY_ADDRESS = {
     "故宫博物院": geocode_payload("北京市东城区景山前街4号", 116.397, 39.918),
 }
 
+REGEO_PAYLOAD = {
+    "status": "1",
+    "info": "OK",
+    "infocode": "10000",
+    "regeocode": {
+        "formatted_address": "北京市东城区东华门街道天安门前石狮子",
+        "addressComponent": {
+            "province": "北京市",
+            "city": [],  # 直辖市常见：city 为空数组
+            "citycode": "010",
+            "adcode": "110101",
+            "district": "东城区",
+        },
+    },
+}
+
 DRIVING_TAXI_PAYLOAD = {
     "status": "1",
     "info": "OK",
@@ -729,9 +745,16 @@ class TestLiveMode:
         assert len(geocode_calls) == 2  # 重复地址只解析一次
         assert len(data["legs"]) == 2
 
-    def test_location_points_skip_geocode(self, monkeypatch):
+    def test_location_points_regeo_and_skip_geocode(self, monkeypatch):
+        """浏览器定位只给经纬度时：逆地理编码补全地址/citycode，同时不调用地址地理编码。"""
         monkeypatch.setenv("AMAP_KEY", "TEST_KEY_LOC")
-        log = install_amap(monkeypatch, {"/v5/direction/walking": WALKING_PAYLOAD})
+        log = install_amap(
+            monkeypatch,
+            {
+                "/v3/geocode/regeo": REGEO_PAYLOAD,
+                "/v5/direction/walking": WALKING_PAYLOAD,
+            },
+        )
         payload = {
             "points": [{"location": "116.378,39.865"}, {"location": "116.397,39.918"}],
             "modes": ["walking"],
@@ -739,8 +762,31 @@ class TestLiveMode:
         status, data = get_json("POST", "/api/plan", payload)
         assert status == 200
         assert not any(item["url"].endswith("/v3/geocode/geo") for item in log)
+        assert sum(1 for item in log if item["url"].endswith("/v3/geocode/regeo")) == 2
+        assert data["points"][0]["citycode"] == "010"
+        assert data["points"][0]["city"] == "北京市"
+        assert data["points"][0]["name"] == "北京市东城区东华门街道天安门前石狮子"
+        assert data["points"][0]["formatted_address"] == "北京市东城区东华门街道天安门前石狮子"
+
+    def test_location_points_regeo_failure_falls_back(self, monkeypatch):
+        """逆地理编码失败不应让整次规划失败，仅丢失城市信息。"""
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_LOCFAIL")
+        install_amap(
+            monkeypatch,
+            {
+                "/v3/geocode/regeo": {"status": "0", "info": "RESULTS_ARE_EMPTY", "infocode": "30007"},
+                "/v5/direction/walking": WALKING_PAYLOAD,
+            },
+        )
+        payload = {
+            "points": [{"location": "116.378,39.865", "name": "我的位置"}, {"location": "116.397,39.918"}],
+            "modes": ["walking"],
+        }
+        status, data = get_json("POST", "/api/plan", payload)
+        assert status == 200
+        assert data["points"][0]["name"] == "我的位置"
         assert data["points"][0]["citycode"] == ""
-        assert data["points"][0]["name"] == "116.378,39.865"
+        assert len(data["legs"]) == 1
 
     def test_amap_api_error_maps_to_amap_error(self, monkeypatch):
         secret = "SECRET_KEY_SHOULD_NOT_LEAK"

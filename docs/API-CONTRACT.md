@@ -33,7 +33,7 @@
 ```json
 {
   "ok": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "demo": true,
   "demo_reason": "未配置 AMAP_KEY，使用演示数据",
   "defaults": {
@@ -81,6 +81,7 @@
 - `points`：2–10 个地点，按行程顺序。每个点必须是：
   - `{"address": "地址文本"}`（后端调用高德地理编码解析），或
   - `{"location": "116.378,39.865", "name": "可选名称"}`（直接给经纬度，`lng,lat`，小数点后最多 6 位）。
+  - 真实模式下，只给 `location` 的点会调用高德逆地理编码补全 `formatted_address` / `city` / `citycode`（公交规划需要 citycode）；逆地理编码失败时仍可使用坐标规划步行/骑行/驾车/打车，但公交可能不可用。前端「定位」按钮即以 `location` + `name="我的位置"` 提交。
 - `modes`：长度必须等于 `points.length - 1`，取值见上表。
 - `options`：全部可选，缺省用 `/api/status` 的 `defaults`。`transit_strategy` 取值 0–8（高德公交换乘策略，默认 0 推荐）。
 
@@ -233,6 +234,7 @@ FastAPI 自动产生的 422 校验错误可不包装，但前端必须能兜底�
 ## 5. 高德接口与解析（后端实现参考）
 
 - 地理编码：`GET https://restapi.amap.com/v3/geocode/geo?key=...&address=...`，取 `geocodes[0]` 的 `location`、`formatted_address`、`city`、`citycode`、`province`、`district`。
+- 逆地理编码（浏览器定位点）：`GET https://restapi.amap.com/v3/geocode/regeo?key=...&location=...`，取 `regeocode.formatted_address` 与 `addressComponent.city/citycode/province`（直辖市 `city` 常为 `[]`，退回 `province`）。
 - 驾车：`GET https://restapi.amap.com/v5/direction/driving?origin=...&destination=...&show_fields=cost,navi,polyline&strategy=32`
   - `route.taxi_cost`：预计打车费；`route.paths[0].distance`；`duration` 可能在 `paths[0].duration` 或 `paths[0].cost.duration`；过路费在 `paths[0].cost.tolls`；折线在 `paths[0].steps[].polyline`。
 - 步行：`/v5/direction/walking`，`paths[0].distance/duration`，折线在 `steps[].polyline`。

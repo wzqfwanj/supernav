@@ -236,6 +236,32 @@ class AmapClient:
             "location": {"lng": round(location[0], 6), "lat": round(location[1], 6)},
         }
 
+    # ---------------------------------------------------------------- 逆地理编码
+    def regeo(self, location: str) -> dict[str, Any]:
+        """把经纬度转成地址与城市信息（用于浏览器定位的起点）。"""
+        data = self._get("/v3/geocode/regeo", {"location": location})
+        regeocode = data.get("regeocode") if isinstance(data.get("regeocode"), dict) else {}
+        component = (
+            regeocode.get("addressComponent")
+            if isinstance(regeocode.get("addressComponent"), dict)
+            else {}
+        )
+        formatted = as_text(regeocode.get("formatted_address"))
+        # 直辖市（北京/上海等）的 addressComponent.city 常为 []，退回 province
+        city = as_text(component.get("city")) or as_text(component.get("province"))
+        citycode = as_text(component.get("citycode"))
+        parsed = parse_location_text(location)
+        return {
+            "formatted_address": formatted,
+            "city": city,
+            "citycode": citycode,
+            "location": (
+                {"lng": round(parsed[0], 6), "lat": round(parsed[1], 6)}
+                if parsed is not None
+                else {"lng": 0.0, "lat": 0.0}
+            ),
+        }
+
     # ---------------------------------------------------------------- 路径规划
     def driving(self, origin: str, destination: str, mode: str = "driving") -> dict[str, Any]:
         """驾车路线；``mode="taxi"`` 时复用同一条驾车路线但 steps 标记为打车。"""

@@ -82,6 +82,7 @@
   // ===== 状态 =====
   const state = {
     points: ['', ''],
+    pointLocations: [null, null],
     modes: [DEFAULT_MODE],
     modesMeta: FALLBACK_MODES.map(copyMode),
     defaults: Object.assign({}, FALLBACK_DEFAULTS),
@@ -460,16 +461,21 @@
     label.appendChild(el('span', 'point-dot'));
     label.appendChild(el('span', 'point-index-text', pointKindLabel(index)));
 
+    const located = state.pointLocations[index] || null;
     const input = el('input', 'point-input');
     input.type = 'text';
     input.value = address;
     input.id = 'point-input-' + index;
     input.setAttribute('data-point-index', String(index));
-    input.setAttribute('aria-label', pointKindLabel(index) + '地址');
+    input.setAttribute('aria-label', pointKindLabel(index) + '地址' + (located ? '（已使用浏览器定位）' : ''));
     input.setAttribute('autocomplete', 'off');
     input.setAttribute('spellcheck', 'false');
+    if (located) {
+      input.classList.add('is-located');
+      input.title = '已使用浏览器定位：' + located.lng.toFixed(6) + ',' + located.lat.toFixed(6);
+    }
     if (pointKind(index) === 'start') {
-      input.setAttribute('placeholder', '起点地址，例如：北京南站');
+      input.setAttribute('placeholder', '起点地址，例如：北京南站（也可点「定位」）');
     } else if (pointKind(index) === 'end') {
       input.setAttribute('placeholder', '终点地址，例如：首都机场');
     } else {
@@ -477,6 +483,14 @@
     }
 
     const actions = el('div', 'point-actions');
+    if (pointKind(index) === 'start') {
+      const locate = el('button', 'btn btn-small btn-locate', located ? '重新定位' : '定位');
+      locate.type = 'button';
+      locate.setAttribute('data-locate-index', String(index));
+      locate.setAttribute('aria-label', '使用浏览器定位作为起点');
+      locate.title = located ? '重新获取当前浏览器位置' : '使用浏览器定位作为起点';
+      actions.appendChild(locate);
+    }
     if (pointKind(index) === 'via') {
       const remove = el('button', 'btn btn-small btn-quiet remove-point', '删除');
       remove.type = 'button';
@@ -609,6 +623,7 @@
     }
     const insertIndex = state.points.length - 1;
     state.points.splice(insertIndex, 0, '');
+    state.pointLocations.splice(insertIndex, 0, null);
     state.modes.splice(insertIndex, 0, DEFAULT_MODE);
     renderForm();
     focusPointInput(insertIndex);
@@ -619,9 +634,101 @@
       return;
     }
     state.points.splice(index, 1);
+    state.pointLocations.splice(index, 1);
     state.modes.splice(index, 1);
     renderForm();
     focusPointInput(Math.min(index, state.points.length - 2));
+  }
+
+  function locateErrorMessage(error) {
+    const code = error && error.code;
+    if (code === 1) {
+      return {
+        message: '浏览器定位权限被拒绝。',
+        hint: '请在浏览器地址栏的权限设置中允许本站定位，然后重试；也可以直接输入起点地址。'
+      };
+    }
+    if (code === 2) {
+      return {
+        message: '暂时无法获取当前位置。',
+        hint: '请检查设备定位服务是否开启（或网络是否可用），也可以直接输入起点地址。'
+      };
+    }
+    if (code === 3) {
+      return {
+        message: '定位超时。',
+        hint: '请重试，或直接输入起点地址。'
+      };
+    }
+    return {
+      message: '定位失败。',
+      hint: '请检查浏览器定位权限后重试，或直接输入起点地址。'
+    };
+  }
+
+  function setLocateButtonBusy(index, busy) {
+    const button = dom.pointsList.querySelector('[data-locate-index="' + index + '"]');
+    if (!button) {
+      return;
+    }
+    button.disabled = busy;
+    if (busy) {
+      button.textContent = '定位中…';
+    } else {
+      button.textContent = state.pointLocations[index] ? '重新定位' : '定位';
+    }
+  }
+
+  function handleLocate(index) {
+    if (state.loading) {
+      return;
+    }
+    if (!window.isSecureContext) {
+      showAlert({
+        message: '浏览器定位需要 HTTPS 环境。',
+        hint: '请通过 https 地址访问本站（本地可用 http://127.0.0.1 / localhost），或直接输入起点地址。'
+      });
+      return;
+    }
+    if (!navigator.geolocation || typeof navigator.geolocation.getCurrentPosition !== 'function') {
+      showAlert({
+        message: '当前浏览器不支持定位。',
+        hint: '请直接输入起点地址。'
+      });
+      return;
+    }
+    setLocateButtonBusy(index, true);
+    const finish = function () {
+      setLocateButtonBusy(index, false);
+    };
+    try {
+      navigator.geolocation.getCurrentPosition(
+        function (position) {
+          const lng = Number(position.coords.longitude);
+          const lat = Number(position.coords.latitude);
+          if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+            finish();
+            showAlert({ message: '定位结果无效。', hint: '请重试或直接输入起点地址。' });
+            return;
+          }
+          state.pointLocations[index] = {
+            lng: Number(lng.toFixed(6)),
+            lat: Number(lat.toFixed(6))
+          };
+          state.points[index] = '我的位置';
+          renderForm();
+          focusPointInput(index);
+        },
+        function (error) {
+          finish();
+          showAlert(locateErrorMessage(error));
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+      );
+    } catch (error) {
+      finish();
+      showAlert(locateErrorMessage(error));
+    }
   }
 
   // ===== 计价设置 =====
@@ -694,6 +801,9 @@
 
   function applyExample(example) {
     state.points = example.points.slice();
+    state.pointLocations = example.points.map(function () {
+      return null;
+    });
     state.modes = example.modes.slice();
     renderForm();
     clearAlert();
@@ -834,7 +944,14 @@
   }
 
   function buildPointsPayload() {
-    return state.points.map(function (address) {
+    return state.points.map(function (address, index) {
+      const located = state.pointLocations[index] || null;
+      if (located) {
+        return {
+          location: located.lng.toFixed(6) + ',' + located.lat.toFixed(6),
+          name: String(address || '').trim() || '我的位置'
+        };
+      }
       return { address: String(address || '').trim() };
     });
   }
@@ -1870,6 +1987,18 @@
       }
       state.points[index] = target.value;
       target.classList.remove('is-invalid');
+      if (state.pointLocations[index]) {
+        // 用户手动修改起点文本后，不再使用浏览器定位坐标
+        state.pointLocations[index] = null;
+        target.classList.remove('is-located');
+        target.removeAttribute('title');
+        const locateButton = dom.pointsList.querySelector('[data-locate-index="' + index + '"]');
+        if (locateButton) {
+          locateButton.textContent = '定位';
+          locateButton.title = '使用浏览器定位作为起点';
+        }
+        target.setAttribute('aria-label', pointKindLabel(index) + '地址');
+      }
       updateSegmentLabels();
     });
 
@@ -1893,6 +2022,15 @@
     dom.pointsList.addEventListener('click', function (event) {
       const target = event.target;
       if (!target || typeof target.closest !== 'function') {
+        return;
+      }
+      const locateButton = target.closest('[data-locate-index]');
+      if (locateButton) {
+        event.preventDefault();
+        const locateIndex = Number(locateButton.getAttribute('data-locate-index'));
+        if (Number.isInteger(locateIndex)) {
+          handleLocate(locateIndex);
+        }
         return;
       }
       const button = target.closest('[data-remove-index]');
