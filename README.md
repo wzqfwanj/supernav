@@ -5,7 +5,7 @@
 > 在线体验：**https://wkeeli.cn/supernav/**（公开、无密码；已接入真实高德数据，无 Key 时自动降级演示模式）
 > 源码：https://github.com/wzqfwanj/supernav
 
-> 当前版本：MVP v0.2（交通规划：5 方式对比 + 组合行程）。
+> 当前版本：MVP v0.4（交通规划：5 方式对比 + 组合行程 + 起点定位）。
 
 ## 功能
 
@@ -26,6 +26,10 @@
 暗主题：
 
 ![SuperNav 交通规划（暗主题）](docs/screenshot-dark.png)
+
+起点定位（回显详细地址，并保存到浏览器本地，刷新后自动恢复）：
+
+![SuperNav 起点定位](docs/screenshot-locate.png)
 
 ## 快速开始
 
@@ -110,9 +114,9 @@ python verify/dom_check.py
 
 ## 当前状态
 
-- 后端单测（76 passed）、黑盒验收（54/54）、独立验证（4123 PASS / 0 FAIL，无头 DOM 106 PASS）已通过；页面已用 headless Chrome / Playwright 实际渲染与点击确认（明/暗主题、方式对比、起点定位）。
+- 后端单测（79 passed）、黑盒验收（59/59）、独立验证（4185 PASS / 0 FAIL，无头 DOM 115 PASS）已通过；页面已用 headless Chrome / Playwright 实际渲染与点击确认（明/暗主题、方式对比、起点定位）。
 - 已在线部署：https://wkeeli.cn/supernav/ （子路径反代，无访问密码，公开访问）。
-- 已开源：https://github.com/wzqfwanj/supernav （公开仓库，v0.3.0 Release）。
+- 已开源：https://github.com/wzqfwanj/supernav （公开仓库，v0.4.0 Release）。
 - **真实高德数据已联调**：线上已配置高德 Web 服务 Key，步行 / 骑行 / 公交地铁（含换乘步骤与票价）/ 打车（预估打车费）/ 驾车（油费 + 过路费）均走真实数据；「方式对比」一次调用 5 种方式。
 - Key 仅保存在服务器 `/opt/supernav/config.local.json`（权限 600），不进入 Git、不进入前端、不在接口响应中出现；线上保留无 Key 时自动演示模式的降级能力。
 - 公开站点调用高德接口受 Key 配额 / QPS 限制；后端已对 QPS 超限做自动退避重试，并在超限时返回可读提示。

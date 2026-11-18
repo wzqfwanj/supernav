@@ -1352,6 +1352,12 @@ class TestRegeoEndpoint:
         assert status == 400
         assert data["error"]["code"] == "INVALID_INPUT"
 
+    def test_regeo_too_many_decimals_is_400(self):
+        status, data = get_json("GET", "/api/regeo?location=116.3970001,39.908")
+        assert status == 400
+        assert data["error"]["code"] == "INVALID_INPUT"
+        assert "6 位" in data["error"]["message"]
+
     def test_regeo_live_uses_amap_reverse_geocode(self, monkeypatch):
         secret = "SECRET_KEY_REGEO_SHOULD_NOT_LEAK"
         monkeypatch.setenv("AMAP_KEY", secret)

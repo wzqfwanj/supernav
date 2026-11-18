@@ -138,6 +138,13 @@ def create_app() -> FastAPI:
                 "location 必须是合法的 \"lng,lat\" 经纬度",
                 '例如 /api/regeo?location=116.397,39.908',
             )
+        parts = location.strip().replace(";", ",").split(",")
+        if any("." in part and len(part.strip().split(".", 1)[1]) > 6 for part in parts):
+            raise ApiError(
+                "INVALID_INPUT",
+                "location 小数点后最多 6 位",
+                '例如 /api/regeo?location=116.397,39.908',
+            )
         lng, lat = round(parsed[0], 6), round(parsed[1], 6)
         is_demo, _reason = config.demo_state()
         point = {"lng": lng, "lat": lat}
