@@ -1,7 +1,7 @@
 # SuperNav「5 种交通方式对比」— 独立验证报告（task-6）
 
 - 验证角色：verifier（独立于 backend / frontend 实现，只验证、不改业务代码）
-- 说明：本报告主体为 **v0.2.0 5 方式对比** 阶段验证；**v0.3.0「起点定位」发布前最终复验见 [`verify/v0.3.0-report.md`](v0.3.0-report.md)**（最新计数：smoke 4123 PASS、DOM 106 PASS、pytest 76 passed）。
+- 说明：本报告主体为 **v0.2.0 5 方式对比** 阶段验证；最新发布前复验见 **[`verify/v0.4.0-report.md`](v0.4.0-report.md)**（v0.4.0 最终版：smoke 4187 PASS / 0 WARN、DOM 115 PASS、pytest 80 passed；v0.3.0 起点定位报告见 [`verify/v0.3.0-report.md`](v0.3.0-report.md)）。
 - 首次验证：2026-11-18 13:04–13:07（Asia/Shanghai）
 - **v0.2.0 发布前复验：2026-11-18 13:09（L-compare-1 修复 + 版本升 0.2.0 后重跑，结论 PASS）**
 - 验证对象：`POST /api/compare`（契约 3.4）、`/api/plan` 回归、前端方式对比/组合行程 UI

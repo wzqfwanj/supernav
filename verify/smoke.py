@@ -82,8 +82,8 @@ MONEY_TOL = 0.011  # 1 分钱容差（金额四舍五入到 0.01）
 # 内置示例地点（演示模式覆盖，docs/API-CONTRACT.md 第 6 节）
 PLACES = ["北京南站", "故宫博物院", "北京西站", "国贸", "中关村", "天安门", "王府井", "三里屯", "首都机场", "北京大学"]
 
-# 当前契约实现版本（backend/__init__.py 的 __version__；/api/compare 从 0.1.1 起、起点定位从 0.3.0 起）
-EXPECTED_VERSION = "0.3.0"
+# 当前契约实现版本（backend/__init__.py 的 __version__；/api/compare 从 0.1.1、定位 0.3.0、/api/regeo 0.4.0 起）
+EXPECTED_VERSION = "0.4.0"
 
 
 # --------------------------------------------------------------------------- 小工具
@@ -1085,11 +1085,12 @@ class Suite:
         self._run_pytest_selector("compare_isolates", "compare.pytest.isolation")
         self._run_pytest_selector("TestCompareLive", "compare.pytest.live")
 
-    # -- 4e. 起点定位 / 逆地理编码（v0.3.0，代码审查 + 定向 mock 单测）-------
+    # -- 4e. 起点定位 / 逆地理编码（v0.3.0→v0.4.0，代码审查 + 定向 mock 单测）--
     def check_regeo_location(self) -> None:
-        print("\n== 4e. 起点定位（regeo 逆地理编码）代码审查 + 定向 mock 单测 ==")
+        print("\n== 4e. 起点定位（regeo 逆地理编码 / 详细地址回显）代码审查 + 定向 mock 单测 ==")
         amap_src = read_text(PROJECT_ROOT / "backend" / "amap.py")
         planner_src = read_text(PROJECT_ROOT / "backend" / "planner.py")
+        app_src = read_text(PROJECT_ROOT / "backend" / "app.py")
         docs = read_text(PROJECT_ROOT / "docs" / "API-CONTRACT.md")
         checks = [
             ("amap.regeo_method", "def regeo(" in amap_src),
@@ -1115,13 +1116,94 @@ class Suite:
                 is not None,
             ),
             ("planner.regeo_fields_used", all(key in planner_src for key in ('geo.get("formatted_address")', 'geo.get("city")', 'geo.get("citycode")'))),
+            ("app.regeo_endpoint", '@app.get("/api/regeo")' in app_src),
+            ("app.regeo_demo_text", "当前位置（" in app_src),
+            ("app.regeo_live_branch", "client.regeo(format_location" in app_src and '"mode": "live"' in app_src),
+            ("app.regeo_invalid_4xx", 'raise ApiError(\n                "INVALID_INPUT"' in app_src),
             ("docs.regeo_documented", "逆地理编码" in docs and "/v3/geocode/regeo" in docs),
-            ("docs.locate_payload", "我的位置" in docs),
+            ("docs.regeo_endpoint_section", "### 3.5 `GET /api/regeo`" in docs),
+            ("docs.regeo_demo_note", "演示模式返回" in docs and "坐标文本" in docs),
+            ("version.0.4.0", '0.4.0' in read_text(PROJECT_ROOT / "backend" / "__init__.py")),
         ]
         for label, ok in checks:
             self.ck.check(f"location.code.{label}", ok, label)
-        # 定向跑后端 mock 单测：regeo 成功补全 + 失败降级不影响整次规划
+        # 定向跑后端 mock 单测：regeo 补全 / 失败降级 / /api/regeo 端点（demo/live mock/非法坐标/Key 不泄漏）
+        self._run_pytest_selector("TestRegeoEndpoint", "location.pytest.regeo_endpoint")
         self._run_pytest_selector("regeo", "location.pytest.regeo")
+
+    # -- 4f. GET /api/regeo（v0.4.0，演示模式 HTTP 契约）---------------------
+    def check_regeo_endpoint(self) -> None:
+        print("\n== 4f. GET /api/regeo（演示模式：详细地址回显接口）==")
+        status_code, text, data = self.fetch("regeo.valid", "/api/regeo?location=116.397,39.908")
+        valid_text = text or ""
+        self.ck.eq("regeo.valid.status_code", status_code, 200)
+        if isinstance(data, dict):
+            self.ck.eq("regeo.valid.keys", set(data.keys()), {"mode", "formatted_address", "city", "citycode", "location"})
+            self.ck.eq("regeo.valid.mode", data.get("mode"), "demo")
+            self.ck.eq("regeo.valid.formatted_address", data.get("formatted_address"), "当前位置（116.397000, 39.908000）")
+            self.ck.eq("regeo.valid.city", data.get("city"), "北京市")
+            self.ck.eq("regeo.valid.citycode", data.get("citycode"), "010")
+            self.ck.eq("regeo.valid.location", data.get("location"), {"lng": 116.397, "lat": 39.908})
+            self.samples["regeo_demo"] = data
+        else:
+            self.ck.check("regeo.valid.object", False, valid_text[:300])
+
+        # 6 位小数坐标同样正常（前端定位固定发 6 位）
+        status_code, text, data = self.fetch("regeo.six_decimals", "/api/regeo?location=116.123456,39.123456")
+        self.ck.eq("regeo.six_decimals.status_code", status_code, 200)
+        if isinstance(data, dict):
+            self.ck.eq("regeo.six_decimals.location", data.get("location"), {"lng": 116.123456, "lat": 39.123456})
+
+        # 非法坐标 → 4xx + 统一错误结构
+        invalid_cases = [
+            ("regeo.invalid.missing", "/api/regeo"),
+            ("regeo.invalid.bad", "/api/regeo?location=bad"),
+            ("regeo.invalid.one_part", "/api/regeo?location=116.3"),
+            ("regeo.invalid.out_of_range", "/api/regeo?location=200,39.9"),
+            ("regeo.invalid.empty", "/api/regeo?location="),
+            ("regeo.invalid.text", "/api/regeo?location=abc,def"),
+        ]
+        samples = {}
+        for name, path in invalid_cases:
+            status_code, text, data = self.fetch(name, path)
+            ok = isinstance(status_code, int) and 400 <= status_code < 500
+            self.ck.check(f"{name}.4xx", ok, f"status={status_code} body={text[:300]!r}")
+            error = data.get("error") if isinstance(data, dict) else None
+            self.ck.check(f"{name}.error_object", isinstance(error, dict), f"body={text[:300]!r}")
+            if isinstance(error, dict):
+                self.ck.eq(f"{name}.error_code", error.get("code"), "INVALID_INPUT")
+                self.ck.check(
+                    f"{name}.error_message_readable",
+                    isinstance(error.get("message"), str) and len(error["message"].strip()) >= 2 and "Traceback" not in error["message"],
+                    f"message={error.get('message')!r}",
+                )
+                self.ck.check(f"{name}.error_hint_str", isinstance(error.get("hint"), str), f"hint={error.get('hint')!r}")
+                if name in {"regeo.invalid.bad", "regeo.invalid.out_of_range"}:
+                    samples[name] = {"status": status_code, "body": data}
+        self.samples["regeo_validation"] = samples
+
+        # >6 位小数：v0.4.0 最终版已与 /api/plan 对齐 → 400（L-v040-1 已修复）
+        status_code, text, data = self.fetch("regeo.too_many_decimals", "/api/regeo?location=116.1234567,39.9")
+        ok_4xx = isinstance(status_code, int) and 400 <= status_code < 500
+        self.ck.check("regeo.too_many_decimals.4xx", ok_4xx, f"status={status_code} body={text[:300]!r}")
+        error = data.get("error") if isinstance(data, dict) else None
+        self.ck.check(
+            "regeo.too_many_decimals.error_code",
+            isinstance(error, dict) and error.get("code") == "INVALID_INPUT",
+            f"error={error!r}",
+        )
+        self.ck.check(
+            "regeo.too_many_decimals.message_6_digits",
+            isinstance(error, dict) and isinstance(error.get("message"), str) and "6 位" in error["message"],
+            f"message={(error or {}).get('message')!r}",
+        )
+        if not ok_4xx:
+            self.ck.warn("regeo.too_many_decimals.contract", "location 超过 6 位小数应返回 400（与 /api/plan 一致）")
+
+        # 演示响应不含 Key 值形态
+        leak_patterns = [re.compile(r"\b[0-9a-fA-F]{32}\b"), re.compile(r"restapi\.amap\.com"), re.compile(r'"amap_key"\s*:'), re.compile(r"[?&]key=(?!\*)")]
+        leaked = next((pattern.pattern for pattern in leak_patterns if pattern.search(valid_text)), None)
+        self.ck.check("regeo.no_key_material", leaked is None, f"命中 {leaked!r}")
 
     # -- 5. 安全（Key 不泄漏 / .gitignore）-----------------------------------
     def check_security(self) -> None:
@@ -1149,6 +1231,10 @@ class Suite:
         )
         self.ck.eq("security.compare.status_code", status_code, 200)
         texts["compare"] = text
+
+        status_code, text, data = self.fetch("security.regeo", "/api/regeo?location=116.397,39.908")
+        self.ck.eq("security.regeo.status_code", status_code, 200)
+        texts["regeo"] = text
 
         # 响应/静态文件里不得出现「Key 值」或 Key 的请求形态。
         # 注意：demo_reason 按契约会写「未配置 AMAP_KEY」，那是环境变量名而非 Key 值，不能误报，
@@ -1368,10 +1454,31 @@ class Suite:
             and re.search(r"name:\s*String\(address \|\| ''\)\.trim\(\) \|\| '我的位置'", app) is not None,
             "定位点提交时应为 {location, name:'我的位置'}",
         )
-        present("locate.fills_my_location", "state.points[index] = '我的位置'" in app)
+        present("locate.fills_detail", "state.points[index] = detail" in app and "locateFallbackLabel(" in app)
         present("locate.error_paths", all(f"code === {code}" in app for code in (1, 2, 3)))
         present("locate.manual_edit_clears", "state.pointLocations[index] = null" in app and "不再使用浏览器定位坐标" in app)
         present("locate.css", ".btn-locate" in styles and ".point-input.is-located" in styles)
+
+        # ===== 上次定位保存/恢复（v0.4.0）=====
+        present("locate.saved_key", "supernav-saved-location" in app and "SAVED_LOCATION_KEY" in app)
+        present("locate.saved_helpers", all(name in app for name in ("saveSavedLocation", "loadSavedLocation", "restoreSavedLocation")))
+        present("locate.saved_json", "JSON.stringify(location)" in app and "JSON.parse(raw)" in app)
+        present("locate.saved_validation", "lng < -180" in app and "lat < -90" in app and "updatedAt" in app)
+        present(
+            "locate.restore_on_init",
+            "function init()" in app and "restoreSavedLocation();" in app and app.index("restoreSavedLocation();") > app.index("function init()"),
+            "init() 中应恢复上次定位",
+        )
+        present("locate.regeo_fetch", "api/regeo?location=" in app and "encodeURIComponent(" in app)
+        present("locate.regeo_timeout", "fetchRegeoAddress" in app and "10000" in app and "controller.abort()" in app)
+        present("locate.fallback_label", "function locateFallbackLabel" in app and "当前位置（" in app)
+        present("locate.saves_after_regeo", "saveSavedLocation({" in app and "address: detail" in app)
+        present(
+            "locate.keeps_busy_until_regeo",
+            "fetchRegeoAddress(located.lng, located.lat).then" in app and "state.pointLocations[index] !== located" in app,
+            "逆地理返回前应保持「定位中…」并防止用户编辑被覆盖",
+        )
+        present("locate.title_saved", "'已定位并保存：'" in app)
 
         # 无外部 CDN / 无外链资源
         external_refs = re.findall(r'(?:src|href)\s*=\s*["\'](https?://[^"\']+)', index)
@@ -1501,6 +1608,7 @@ def main(argv: list[str] | None = None) -> int:
             suite.check_location_and_limits()
             suite.check_options()
             suite.check_compare()
+            suite.check_regeo_endpoint()
         else:
             ck.check(
                 "environment.demo_mode",

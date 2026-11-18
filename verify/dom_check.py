@@ -52,6 +52,9 @@ BROWSER_CANDIDATES = [
 
 COMPARE_ORDER = ["transit", "driving", "taxi", "bicycling", "walking"]
 MODE_LABELS = {"walking": "步行", "bicycling": "骑行", "transit": "公交/地铁", "taxi": "打车", "driving": "驾车"}
+# 演示模式 /api/regeo 返回的坐标文本（Playwright geolocation 固定 116.4, 39.9）
+LOCATED_DETAIL = "当前位置（116.400000, 39.900000）"
+LOCATED_LOCATION = "116.400000,39.900000"
 
 
 # ---------------------------------------------------------------- 前端格式化复刻
@@ -214,14 +217,25 @@ def main(argv: list[str] | None = None) -> int:
                 page.inner_text("#mode-switch-hint"),
             )
 
-            # ---------------------------------------------------------- 2. 起点定位（v0.3.0）
+            # ---------------------------------------------------------- 2. 起点定位 + 详细地址回显/保存（v0.4.0）
             ck.eq("dom.locate.start_button_count", page.locator('#points-list [data-locate-index="0"]').count(), 1)
             ck.eq("dom.locate.end_has_no_button", page.locator('#points-list [data-locate-index="1"]').count(), 0)
             ck.eq("dom.locate.button_text", page.inner_text('[data-locate-index="0"]').strip(), "定位")
             ck.check("dom.locate.secure_context", page.evaluate("() => window.isSecureContext") is True, "127.0.0.1 应为 secure context")
-            page.click('[data-locate-index="0"]')
-            page.wait_for_function("() => document.querySelector('#point-input-0').value === '我的位置'", timeout=15000)
-            ck.eq("dom.locate.filled_value", page.input_value("#point-input-0"), "我的位置")
+            with page.expect_response(lambda resp: "/api/regeo" in resp.url) as regeo_info:
+                page.click('[data-locate-index="0"]')
+            regeo_response = regeo_info.value
+            ck.eq("dom.locate.regeo_http_status", regeo_response.status, 200)
+            regeo_data = regeo_response.json()
+            samples["regeo_response"] = regeo_data
+            ck.eq("dom.locate.regeo_mode_demo", regeo_data.get("mode"), "demo")
+            ck.eq("dom.locate.regeo_formatted_address", regeo_data.get("formatted_address"), LOCATED_DETAIL)
+            page.wait_for_function(
+                "expected => document.querySelector('#point-input-0').value === expected",
+                arg=LOCATED_DETAIL,
+                timeout=15000,
+            )
+            ck.eq("dom.locate.filled_value", page.input_value("#point-input-0"), LOCATED_DETAIL)
             ck.eq("dom.locate.button_text_after", page.inner_text('[data-locate-index="0"]').strip(), "重新定位")
             ck.check(
                 "dom.locate.input_marked",
@@ -229,9 +243,25 @@ def main(argv: list[str] | None = None) -> int:
                 "定位后输入框应有 is-located 样式",
             )
             located_title = page.get_attribute("#point-input-0", "title")
-            ck.check("dom.locate.input_title", bool(located_title) and "116.400000" in located_title, located_title)
-            samples["locate"] = {"value": "我的位置", "title": located_title, "button": "重新定位"}
-            # 手动修改起点文本后应清除定位坐标/样式，避免「我的位置」与实际地址不一致
+            ck.check(
+                "dom.locate.input_title",
+                bool(located_title) and "已定位并保存" in located_title and LOCATED_DETAIL in located_title,
+                located_title,
+            )
+            saved_raw = page.evaluate("() => window.localStorage.getItem('supernav-saved-location')")
+            saved = json.loads(saved_raw) if saved_raw else {}
+            samples["saved_location"] = saved
+            ck.check(
+                "dom.locate.saved_localstorage",
+                isinstance(saved, dict)
+                and saved.get("address") == LOCATED_DETAIL
+                and abs(float(saved.get("lng", 0)) - 116.4) < 1e-9
+                and abs(float(saved.get("lat", 0)) - 39.9) < 1e-9
+                and float(saved.get("updatedAt", 0)) > 0,
+                saved,
+            )
+            samples["locate"] = {"value": LOCATED_DETAIL, "title": located_title, "button": "重新定位"}
+            # 手动修改起点文本后应清除当前定位坐标/样式
             page.fill("#point-input-0", "北京南站")
             page.wait_for_function(
                 "() => document.querySelector('[data-locate-index=\"0\"]').textContent.trim() === '定位'",
@@ -242,9 +272,26 @@ def main(argv: list[str] | None = None) -> int:
                 page.eval_on_selector("#point-input-0", "element => !element.classList.contains('is-located')"),
                 "手动输入后应移除定位样式",
             )
-            # 再次定位，验证「定位起点 → 方式对比」端到端链路（真实请求体）
-            page.click('[data-locate-index="0"]')
-            page.wait_for_function("() => document.querySelector('#point-input-0').value === '我的位置'", timeout=15000)
+            # 刷新页面：应从 localStorage 自动恢复上次定位（详细地址 + 「重新定位」）
+            page.reload(wait_until="load")
+            wait_app_ready(page)
+            page.wait_for_function(
+                "expected => document.querySelector('#point-input-0').value === expected",
+                arg=LOCATED_DETAIL,
+                timeout=15000,
+            )
+            ck.eq("dom.locate.restored_value", page.input_value("#point-input-0"), LOCATED_DETAIL)
+            ck.eq("dom.locate.restored_button", page.inner_text('[data-locate-index="0"]').strip(), "重新定位")
+            ck.check(
+                "dom.locate.restored_marked",
+                page.eval_on_selector("#point-input-0", "element => element.classList.contains('is-located')"),
+                "恢复后输入框应有 is-located 样式",
+            )
+            restored_title = page.get_attribute("#point-input-0", "title")
+            ck.check("dom.locate.restored_title", bool(restored_title) and "已定位并保存" in restored_title, restored_title)
+            saved_after_reload = page.evaluate("() => window.localStorage.getItem('supernav-saved-location')")
+            ck.eq("dom.locate.saved_survives_reload", saved_after_reload, saved_raw)
+            # 恢复的定位起点 → 方式对比 端到端请求体
             page.fill("#point-input-1", "故宫博物院")
             with page.expect_response(lambda response: "/api/compare" in response.url and response.request.method == "POST") as compare_info:
                 page.click("#submit-btn")
@@ -255,8 +302,8 @@ def main(argv: list[str] | None = None) -> int:
             request_points = request_payload.get("points") or []
             start_point = request_points[0] if request_points else {}
             end_point = request_points[1] if len(request_points) > 1 else {}
-            ck.eq("dom.locate.payload_location", start_point.get("location"), "116.400000,39.900000")
-            ck.eq("dom.locate.payload_name", start_point.get("name"), "我的位置")
+            ck.eq("dom.locate.payload_location", start_point.get("location"), LOCATED_LOCATION)
+            ck.eq("dom.locate.payload_name", start_point.get("name"), LOCATED_DETAIL)
             ck.check("dom.locate.payload_no_start_address", "address" not in start_point, start_point)
             ck.eq("dom.locate.payload_end_address", end_point.get("address"), "故宫博物院")
             compare_data = response.json()
