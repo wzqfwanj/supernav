@@ -1221,14 +1221,24 @@
 
   function buildStep(step) {
     const item = el('li', 'step');
-    item.appendChild(el('span', 'step-type', stepTypeLabel(step.type)));
-    const text = isNonEmptyString(step.text) ? step.text : '';
+    const typeLabel = stepTypeLabel(step.type);
+    item.appendChild(el('span', 'step-type', typeLabel));
+    let text = isNonEmptyString(step.text) ? step.text : '';
+    // 避免「步行 步行 500 米」这类重复：文本以类型名开头时去掉前缀
+    if (typeLabel && text.indexOf(typeLabel) === 0) {
+      text = text.slice(typeLabel.length).trim();
+    }
     if (text) {
       item.appendChild(el('span', 'step-text', text));
     }
     const parts = [];
-    if (parseNumber(step.distance_m) !== null && Number(step.distance_m) > 0) {
-      parts.push(formatDistance(step.distance_m));
+    const distanceText =
+      parseNumber(step.distance_m) !== null && Number(step.distance_m) > 0
+        ? formatDistance(step.distance_m)
+        : '';
+    // 文本里已经写了距离（如「步行 500 米至站点」）时，不重复显示距离
+    if (distanceText && text.indexOf(distanceText) < 0) {
+      parts.push(distanceText);
     }
     if (parseNumber(step.duration_s) !== null && Number(step.duration_s) > 0) {
       parts.push(formatDuration(step.duration_s));

@@ -2,7 +2,7 @@
 
 一个极简的多段交通规划小应用：输入起点、途经点、终点，为每段选择交通方式，自动规划路线并计算**路费**（公交票价 / 打车费 / 过路费 / 油费），给出逐段明细与全程合计。
 
-> 在线体验：**https://wkeeli.cn/supernav/**（公开、无密码；当前为演示模式）
+> 在线体验：**https://wkeeli.cn/supernav/**（公开、无密码；已接入真实高德数据，无 Key 时自动降级演示模式）
 > 源码：https://github.com/wzqfwanj/supernav
 
 > 当前版本：MVP v0.1（仅实现「交通规划」这一最小功能）。
@@ -17,7 +17,7 @@
 
 ## 界面预览
 
-演示模式（明主题）：
+线上真实数据（明主题）：
 
 ![SuperNav 交通规划（明主题）](docs/screenshot-light.png)
 
@@ -98,7 +98,7 @@ config.local.example.json  本地 Key 配置示例
 # 后端单元测试（离线，mock 高德接口）
 python -m pytest -q
 
-# 启动服务后做黑盒验收（演示模式）
+# 启动服务后做黑盒验收（本地服务；线上同理）
 python scripts/acceptance.py
 
 # 独立验证（verifier 输出，含验证报告）
@@ -107,16 +107,17 @@ python verify/smoke.py
 
 ## 当前状态
 
-- 演示模式后端单测、黑盒验收、独立验证已通过；页面已用 headless Chrome 实际渲染截图确认（明/暗主题）。
+- 后端单测（59 passed）、黑盒验收（44/44）、独立验证（1040 PASS / 0 FAIL）已通过；页面已用 headless Chrome 实际渲染截图确认（明/暗主题）。
 - 已在线部署：https://wkeeli.cn/supernav/ （子路径反代，无访问密码，公开访问）。
-- 已开源：https://github.com/wzqfwanj/supernav （公开仓库）。
-- **真实高德数据尚未联调**：当前没有配置高德 Key，线上为演示模式。按上文配置 Key 后重启服务即可切换真实路线；如真实 v5 响应字段与文档有出入，可能需要小幅调整解析（已做多层容错）。
+- 已开源：https://github.com/wzqfwanj/supernav （公开仓库，v0.1.0 Release）。
+- **真实高德数据已联调**：线上已配置高德 Web 服务 Key，步行 / 骑行 / 公交地铁（含换乘步骤与票价）/ 打车（预估打车费）/ 驾车（油费 + 过路费）均走真实数据。
+- Key 仅保存在服务器 `/opt/supernav/config.local.json`（权限 600），不进入 Git、不进入前端、不在接口响应中出现；线上保留无 Key 时自动演示模式的降级能力。
+- 公开站点调用高德接口受 Key 配额 / QPS 限制；后端已对 QPS 超限做自动退避重试，并在超限时返回可读提示。
 
 ## 后续（可选迭代）
 
-- 真实高德 Key 联调（公交票价 / 打车费 / 过路费的真实数据）。
 - 更多规划能力：多方案对比（最快/最省）、地图底图、高德 MCP「专属地图/打车唤端」等。
-- 线上更新：按 [deploy/README.md](deploy/README.md) 重新打包、部署并 `systemctl restart supernav`。
+- 线上更新：按 [deploy/README.md](deploy/README.md) 重新打包、部署并 `systemctl restart supernav`（注意保留 `config.local.json`）。
 
 ## 技术说明
 

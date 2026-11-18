@@ -29,11 +29,16 @@ git archive --format=tar.gz -o supernav.tgz HEAD
 # 上传到 dev 主机（本机的 ~/.ssh/config 已配置 ssh dev）
 scp supernav.tgz dev:/tmp/supernav.tgz
 
-# dev 主机上解包并安装依赖（保留已有 config.local.json）
+# dev 主机上解包并安装依赖（务必保留已有 config.local.json 中的高德 Key）
 ssh dev
+cp /opt/supernav/config.local.json /tmp/supernav-config.json 2>/dev/null || true
 rm -rf /opt/supernav
 mkdir -p /opt/supernav
 tar -xzf /tmp/supernav.tgz -C /opt/supernav
+if [ -f /tmp/supernav-config.json ]; then
+  cp /tmp/supernav-config.json /opt/supernav/config.local.json
+  chmod 600 /opt/supernav/config.local.json
+fi
 cd /opt/supernav
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -44,6 +49,8 @@ systemctl daemon-reload
 systemctl enable --now supernav
 systemctl restart supernav
 ```
+
+> 只更新代码时也可以直接 `tar -xzf /tmp/supernav.tgz -C /opt/supernav` 覆盖解包（不会动到 `.venv/` 与 `config.local.json`），再 `systemctl restart supernav`。
 
 ## 阿里云 Caddy（只做一次）
 
@@ -63,20 +70,22 @@ systemctl reload caddy
 
 ```bash
 curl -sI https://wkeeli.cn/supernav/                      # 200 text/html
-curl -s  https://wkeeli.cn/supernav/api/status            # demo=true
+curl -s  https://wkeeli.cn/supernav/api/status            # demo=false（已配置 Key）或 true（演示模式）
 curl -s -X POST https://wkeeli.cn/supernav/api/plan \
   -H 'Content-Type: application/json' \
   -d '{"points":[{"address":"北京南站"},{"address":"故宫博物院"}],"modes":["transit"]}'
 ```
 
-## 真实高德数据（可选）
+## 真实高德数据
 
-线上默认演示模式。配置真实数据二选一，然后 `systemctl restart supernav`：
+线上已配置真实高德 Web 服务 Key（仅保存在服务器 `/opt/supernav/config.local.json`，权限 600，不进入 Git）。更新代码时请保留该文件，然后 `systemctl restart supernav`。
 
-- `/opt/supernav/config.local.json`：`{"amap_key": "..."}`（不要提交到 Git）
+如需更换 Key，二选一：
+
+- 修改 `/opt/supernav/config.local.json`：`{"amap_key": "..."}`
 - 或 systemd 单元中 `Environment=AMAP_KEY=...`
 
-配置后 `curl -s https://wkeeli.cn/supernav/api/status` 中 `demo` 应为 `false`。
+配置后 `curl -s https://wkeeli.cn/supernav/api/status` 中 `demo` 应为 `false`。无 Key 时自动降级为演示模式。
 
 ## 已知说明
 
