@@ -9,8 +9,9 @@
 3. 自带断言与退出码：全部 PASS 退出码 0；任一 FAIL 退出码 1；结果落盘到
    ``verify/artifacts/smoke-run.json`` 供写报告引用。
 4. 覆盖：契约字段、参数校验、10 点上限、直接经纬度、费用公式、``/api/compare`` 5 方式对比、
-   单方式失败隔离（代码审查 + mock 单测）、安全（Key 不泄漏 / .gitignore）、前端静态资源、
-   前端关键逻辑代码审查（含对比/组合模式）、``node --check``、后端 pytest。
+   单方式失败隔离（代码审查 + mock 单测）、起点定位/regeo（代码审查 + mock 单测）、
+   安全（Key 不泄漏 / .gitignore）、前端静态资源、前端关键逻辑代码审查（含对比/组合/定位）、
+   ``node --check``、后端 pytest。
 
 用法
 ----
@@ -81,8 +82,8 @@ MONEY_TOL = 0.011  # 1 分钱容差（金额四舍五入到 0.01）
 # 内置示例地点（演示模式覆盖，docs/API-CONTRACT.md 第 6 节）
 PLACES = ["北京南站", "故宫博物院", "北京西站", "国贸", "中关村", "天安门", "王府井", "三里屯", "首都机场", "北京大学"]
 
-# 当前契约实现版本（backend/__init__.py 的 __version__；/api/compare 从 0.1.1 起提供，当前 0.2.0）
-EXPECTED_VERSION = "0.2.0"
+# 当前契约实现版本（backend/__init__.py 的 __version__；/api/compare 从 0.1.1 起、起点定位从 0.3.0 起）
+EXPECTED_VERSION = "0.3.0"
 
 
 # --------------------------------------------------------------------------- 小工具
@@ -1084,6 +1085,44 @@ class Suite:
         self._run_pytest_selector("compare_isolates", "compare.pytest.isolation")
         self._run_pytest_selector("TestCompareLive", "compare.pytest.live")
 
+    # -- 4e. 起点定位 / 逆地理编码（v0.3.0，代码审查 + 定向 mock 单测）-------
+    def check_regeo_location(self) -> None:
+        print("\n== 4e. 起点定位（regeo 逆地理编码）代码审查 + 定向 mock 单测 ==")
+        amap_src = read_text(PROJECT_ROOT / "backend" / "amap.py")
+        planner_src = read_text(PROJECT_ROOT / "backend" / "planner.py")
+        docs = read_text(PROJECT_ROOT / "docs" / "API-CONTRACT.md")
+        checks = [
+            ("amap.regeo_method", "def regeo(" in amap_src),
+            ("amap.regeo_endpoint", '"/v3/geocode/regeo"' in amap_src),
+            ("amap.regeo_address_component", "addressComponent" in amap_src),
+            (
+                "amap.regeo_city_province_fallback",
+                re.search(
+                    r'as_text\(component\.get\("city"\)\)\s+or\s+as_text\(component\.get\("province"\)\)',
+                    amap_src,
+                )
+                is not None,
+            ),
+            ("amap.regeo_formatted_address", 'regeocode.get("formatted_address")' in amap_src),
+            ("amap.regeo_citycode", 'component.get("citycode")' in amap_src),
+            ("planner.location_calls_regeo", "client.regeo(" in planner_src),
+            (
+                "planner.regeo_failure_tolerant",
+                re.search(
+                    r"try:\s*\n\s*geo = client\.regeo\([^\n]*\)\s*\n\s*except ApiError:\s*\n\s*geo = \{\}",
+                    planner_src,
+                )
+                is not None,
+            ),
+            ("planner.regeo_fields_used", all(key in planner_src for key in ('geo.get("formatted_address")', 'geo.get("city")', 'geo.get("citycode")'))),
+            ("docs.regeo_documented", "逆地理编码" in docs and "/v3/geocode/regeo" in docs),
+            ("docs.locate_payload", "我的位置" in docs),
+        ]
+        for label, ok in checks:
+            self.ck.check(f"location.code.{label}", ok, label)
+        # 定向跑后端 mock 单测：regeo 成功补全 + 失败降级不影响整次规划
+        self._run_pytest_selector("regeo", "location.pytest.regeo")
+
     # -- 5. 安全（Key 不泄漏 / .gitignore）-----------------------------------
     def check_security(self) -> None:
         print("\n== 5. 安全：响应与前端静态文件不含 Key；.gitignore 覆盖 ==")
@@ -1311,11 +1350,36 @@ class Suite:
             "前端不应使用 innerHTML/eval 等不安全 DOM 写法",
         )
 
+        # ===== 起点定位（v0.3.0）=====
+        present("locate.button_dynamic", "data-locate-index" in app and "btn-locate" in app)
+        present(
+            "locate.start_only",
+            re.search(r"if \(pointKind\(index\) === 'start'\) \{\s*\n\s*const locate", app) is not None
+            and "btn-locate" in styles,
+            "定位按钮应只出现在起点行",
+        )
+        present("locate.geolocation_api", "navigator.geolocation" in app and "getCurrentPosition" in app)
+        present("locate.secure_context_guard", "window.isSecureContext" in app)
+        present("locate.button_busy", "setLocateButtonBusy" in app and "定位中" in app)
+        present("locate.point_locations_state", app.count("pointLocations") >= 3 and "pointLocations: [null, null]" in app)
+        present(
+            "locate.payload_location",
+            re.search(r"location:\s*located\.lng\.toFixed\(6\)", app) is not None
+            and re.search(r"name:\s*String\(address \|\| ''\)\.trim\(\) \|\| '我的位置'", app) is not None,
+            "定位点提交时应为 {location, name:'我的位置'}",
+        )
+        present("locate.fills_my_location", "state.points[index] = '我的位置'" in app)
+        present("locate.error_paths", all(f"code === {code}" in app for code in (1, 2, 3)))
+        present("locate.manual_edit_clears", "state.pointLocations[index] = null" in app and "不再使用浏览器定位坐标" in app)
+        present("locate.css", ".btn-locate" in styles and ".point-input.is-located" in styles)
+
         # 无外部 CDN / 无外链资源
         external_refs = re.findall(r'(?:src|href)\s*=\s*["\'](https?://[^"\']+)', index)
         present("offline.index_no_external_refs", not external_refs, f"外链：{external_refs}")
         app_urls = re.findall(r"https?://[^\s'\"]+", app)
-        non_svg_urls = [url for url in app_urls if not url.startswith("http://www.w3.org/")]
+        # 允许 SVG 命名空间与「本地可用 http://127.0.0.1/localhost」提示文案；其余外链视为违规
+        allowed_url_prefixes = ("http://www.w3.org/", "http://127.0.0.1", "http://localhost", "https://localhost")
+        non_svg_urls = [url for url in app_urls if not url.startswith(allowed_url_prefixes)]
         present("offline.app_no_external_urls", not non_svg_urls, f"外链：{non_svg_urls}")
         present("offline.no_cdn", not re.search(r"(cdn\.|unpkg|jsdelivr|googleapis|bootstrap)", index + app, re.I), "出现 CDN 引用")
         present("offline.css_no_import", "@import" not in styles and not re.search(r"url\(\s*['\"]?https?://", styles), "CSS 引用外部资源")
@@ -1449,6 +1513,8 @@ def main(argv: list[str] | None = None) -> int:
         # compare 的参数校验 / 失败隔离代码审查 / 定向 mock 单测不依赖演示数据，始终执行
         suite.check_compare_validation()
         suite.check_compare_failure_isolation()
+        # 起点定位（regeo）代码审查 + 定向 mock 单测，同样不依赖演示数据
+        suite.check_regeo_location()
 
         suite.check_security()
         suite.check_static()

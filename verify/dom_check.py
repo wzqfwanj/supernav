@@ -5,11 +5,13 @@
 ``http://127.0.0.1:8014/`` 页面，模拟用户点击并读取 DOM，验证：
 
 1. 默认「方式对比」模式：隐藏每段方式下拉、演示横幅可见；
-2. 提交后 5 张方式卡按 公交→驾车→打车→骑行→步行 排列，均显示 耗时/里程/费用；
-3. 默认选中第一个可用方式，点击任一张卡切换详情（合计/逐段/路线随卡片变化，数值与 /api/compare 响应一致）；
-4. 拦截 /api/compare 返回 available=false 的响应，点击不可用卡显示错误态、详情隐藏；
-5. 切换到「组合行程」：每段方式下拉恢复，提交 /api/plan 正常出详情；
-6. 表单错误展示、三主题切换 + localStorage 持久化。
+2. 起点行「定位」按钮：授予 Playwright geolocation 后点击填入「我的位置」，提交 payload 为 `{location, name:"我的位置"}`，
+   且定位后可手动改回地址（清除定位坐标）；无权限时错误提示路径可验证；
+3. 提交后 5 张方式卡按 公交→驾车→打车→骑行→步行 排列，均显示 耗时/里程/费用；
+4. 默认选中第一个可用方式，点击任一张卡切换详情（合计/逐段/路线随卡片变化，数值与 /api/compare 响应一致）；
+5. 拦截 /api/compare 返回 available=false 的响应，点击不可用卡显示错误态、详情隐藏；
+6. 切换到「组合行程」：每段方式下拉恢复，提交 /api/plan 正常出详情；
+7. 表单错误展示、三主题切换 + localStorage 持久化。
 
 只写 verify/**；不修改业务代码。用法::
 
@@ -27,6 +29,7 @@ import copy
 import json
 import math
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -181,7 +184,11 @@ def main(argv: list[str] | None = None) -> int:
                 ck.check("env.browser_launch", False, f"{type(exc).__name__}: {exc}")
                 return 1
             ck.check("env.browser_launch", True, "")
-            context = browser.new_context(viewport={"width": 1440, "height": 1100})
+            context = browser.new_context(
+                viewport={"width": 1440, "height": 1100},
+                geolocation={"latitude": 39.9, "longitude": 116.4},
+                permissions=["geolocation"],
+            )
             page = context.new_page()
             console_errors: list[str] = []
             page_errors: list[str] = []
@@ -207,11 +214,51 @@ def main(argv: list[str] | None = None) -> int:
                 page.inner_text("#mode-switch-hint"),
             )
 
-            # ---------------------------------------------------------- 2. 提交对比
+            # ---------------------------------------------------------- 2. 起点定位（v0.3.0）
+            ck.eq("dom.locate.start_button_count", page.locator('#points-list [data-locate-index="0"]').count(), 1)
+            ck.eq("dom.locate.end_has_no_button", page.locator('#points-list [data-locate-index="1"]').count(), 0)
+            ck.eq("dom.locate.button_text", page.inner_text('[data-locate-index="0"]').strip(), "定位")
+            ck.check("dom.locate.secure_context", page.evaluate("() => window.isSecureContext") is True, "127.0.0.1 应为 secure context")
+            page.click('[data-locate-index="0"]')
+            page.wait_for_function("() => document.querySelector('#point-input-0').value === '我的位置'", timeout=15000)
+            ck.eq("dom.locate.filled_value", page.input_value("#point-input-0"), "我的位置")
+            ck.eq("dom.locate.button_text_after", page.inner_text('[data-locate-index="0"]').strip(), "重新定位")
+            ck.check(
+                "dom.locate.input_marked",
+                page.eval_on_selector("#point-input-0", "element => element.classList.contains('is-located')"),
+                "定位后输入框应有 is-located 样式",
+            )
+            located_title = page.get_attribute("#point-input-0", "title")
+            ck.check("dom.locate.input_title", bool(located_title) and "116.400000" in located_title, located_title)
+            samples["locate"] = {"value": "我的位置", "title": located_title, "button": "重新定位"}
+            # 手动修改起点文本后应清除定位坐标/样式，避免「我的位置」与实际地址不一致
             page.fill("#point-input-0", "北京南站")
+            page.wait_for_function(
+                "() => document.querySelector('[data-locate-index=\"0\"]').textContent.trim() === '定位'",
+                timeout=5000,
+            )
+            ck.check(
+                "dom.locate.manual_edit_clears",
+                page.eval_on_selector("#point-input-0", "element => !element.classList.contains('is-located')"),
+                "手动输入后应移除定位样式",
+            )
+            # 再次定位，验证「定位起点 → 方式对比」端到端链路（真实请求体）
+            page.click('[data-locate-index="0"]')
+            page.wait_for_function("() => document.querySelector('#point-input-0').value === '我的位置'", timeout=15000)
             page.fill("#point-input-1", "故宫博物院")
-            response = fetch_compare_via_ui(page)
+            with page.expect_response(lambda response: "/api/compare" in response.url and response.request.method == "POST") as compare_info:
+                page.click("#submit-btn")
+            response = compare_info.value
             ck.eq("dom.compare_http_status", response.status, 200)
+            request_payload = response.request.post_data_json or {}
+            samples["compare_request"] = request_payload
+            request_points = request_payload.get("points") or []
+            start_point = request_points[0] if request_points else {}
+            end_point = request_points[1] if len(request_points) > 1 else {}
+            ck.eq("dom.locate.payload_location", start_point.get("location"), "116.400000,39.900000")
+            ck.eq("dom.locate.payload_name", start_point.get("name"), "我的位置")
+            ck.check("dom.locate.payload_no_start_address", "address" not in start_point, start_point)
+            ck.eq("dom.locate.payload_end_address", end_point.get("address"), "故宫博物院")
             compare_data = response.json()
             samples["compare_response"] = compare_data
             page.wait_for_function(
@@ -308,6 +355,21 @@ def main(argv: list[str] | None = None) -> int:
                 "elements => elements.map(element => element.getAttribute('data-compare-mode'))",
             )
             ck.eq("dom.single_selected_card", len(selected_cards), 1)
+
+            # ---------------------------------------------------------- 3b. 定位失败路径（权限拒绝 code=1）
+            page.evaluate(
+                "() => { navigator.geolocation.getCurrentPosition = function (success, error) {"
+                " if (error) error({ code: 1, message: 'User denied Geolocation' }); }; }"
+            )
+            page.click('[data-locate-index="0"]')
+            page.wait_for_function("() => { const box = document.querySelector('#alert'); return box && !box.hidden; }", timeout=10000)
+            denied_message = page.inner_text("#alert-message")
+            denied_hint = page.inner_text("#alert-hint")
+            ck.check("dom.locate.denied_alert", "定位权限被拒绝" in denied_message, denied_message)
+            ck.check("dom.locate.denied_hint", "允许本站定位" in denied_hint, denied_hint)
+            ck.eq("dom.locate.denied_button_restored", page.inner_text('[data-locate-index="0"]').strip(), "重新定位")
+            samples["locate_denied"] = {"message": denied_message, "hint": denied_hint}
+            page.click("#alert-dismiss")
 
             # ---------------------------------------------------------- 4. available=false 错误态（拦截响应）
             unavailable = copy.deepcopy(compare_data)

@@ -110,7 +110,7 @@ python verify/dom_check.py
 
 ## 当前状态
 
-- 后端单测（76 passed）、黑盒验收（54/54）、独立验证（4099 PASS / 0 FAIL，无头 DOM 90 PASS）已通过；页面已用 headless Chrome / Playwright 实际渲染与点击确认（明/暗主题、方式对比、定位起点）。
+- 后端单测（76 passed）、黑盒验收（54/54）、独立验证（4123 PASS / 0 FAIL，无头 DOM 106 PASS）已通过；页面已用 headless Chrome / Playwright 实际渲染与点击确认（明/暗主题、方式对比、起点定位）。
 - 已在线部署：https://wkeeli.cn/supernav/ （子路径反代，无访问密码，公开访问）。
 - 已开源：https://github.com/wzqfwanj/supernav （公开仓库，v0.3.0 Release）。
 - **真实高德数据已联调**：线上已配置高德 Web 服务 Key，步行 / 骑行 / 公交地铁（含换乘步骤与票价）/ 打车（预估打车费）/ 驾车（油费 + 过路费）均走真实数据；「方式对比」一次调用 5 种方式。

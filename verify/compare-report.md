@@ -1,10 +1,11 @@
 # SuperNav「5 种交通方式对比」— 独立验证报告（task-6）
 
 - 验证角色：verifier（独立于 backend / frontend 实现，只验证、不改业务代码）
+- 说明：本报告主体为 **v0.2.0 5 方式对比** 阶段验证；**v0.3.0「起点定位」发布前最终复验见 [`verify/v0.3.0-report.md`](v0.3.0-report.md)**（最新计数：smoke 4123 PASS、DOM 106 PASS、pytest 76 passed）。
 - 首次验证：2026-11-18 13:04–13:07（Asia/Shanghai）
-- **发布前最终复验：2026-11-18 13:09（L-compare-1 修复 + 版本升 0.2.0 后重跑，结论 PASS）**
+- **v0.2.0 发布前复验：2026-11-18 13:09（L-compare-1 修复 + 版本升 0.2.0 后重跑，结论 PASS）**
 - 验证对象：`POST /api/compare`（契约 3.4）、`/api/plan` 回归、前端方式对比/组合行程 UI
-- 服务：`http://127.0.0.1:8014`（脚本自行起停；8000 由 Lead 占用，全程未使用）；`/api/status` 版本 **0.2.0**
+- 服务：`http://127.0.0.1:8014`（脚本自行起停；8000 由 Lead 占用，全程未使用）
 - 运行模式：**演示模式**（无 `AMAP_KEY`、无 `DEMO_MODE`、无 `config.local.json`；全程不访问真实高德接口）
 - 交付物：
   - `verify/smoke.py`（已扩展 `/api/compare` 契约/费用/失败隔离/前端对比逻辑检查）
