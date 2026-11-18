@@ -33,7 +33,7 @@
 ```json
 {
   "ok": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "demo": true,
   "demo_reason": "未配置 AMAP_KEY，使用演示数据",
   "defaults": {
@@ -157,6 +157,60 @@
 
 `code` 取值：`INVALID_INPUT`、`GEOCODE_FAILED`、`AMAP_ERROR`、`KEY_MISSING`、`INTERNAL_ERROR`。
 FastAPI 自动产生的 422 校验错误可不包装，但前端必须能兜底展示。
+
+### 3.4 `POST /api/compare`
+
+一次请求对比 5 种交通方式（前端默认「开始规划」即调用本接口）。
+
+请求体：
+
+```json
+{
+  "points": [
+    {"address": "北京南站"},
+    {"address": "故宫博物院"}
+  ],
+  "options": {
+    "fuel_price": 7.8,
+    "fuel_consumption": 8.0,
+    "transit_strategy": 0
+  }
+}
+```
+
+- `points` 规则与 3.3 相同（2–10 个地点，支持 `address` / `location`），`options` 同 3.3。
+- **不需要 `modes`**；若传入则忽略。每种方式都会对整条地点链的每一段进行规划。
+
+成功响应 `200`：
+
+```json
+{
+  "mode": "live",
+  "generated_at": "2026-11-18T12:00:00+08:00",
+  "points": [ /* 同 3.3 的 points 结构 */ ],
+  "modes": [
+    {
+      "mode": "transit",
+      "mode_label": "公交/地铁",
+      "available": true,
+      "error": null,
+      "legs": [ /* 同 3.3 的 legs 结构 */ ],
+      "totals": { /* 同 3.3 的 totals 结构 */ },
+      "summary": "地铁4号线 → 地铁1号线"
+    }
+  ]
+}
+```
+
+约束：
+
+- `modes` 固定返回 5 项，顺序为 `walking`、`bicycling`、`transit`、`taxi`、`driving`；每项都包含 `available`、`error`、`legs`、`totals`、`summary`。
+- 每种方式把 `points` 链的**每一段**都用该方式规划（例如 3 个地点 + `transit` = 2 段公交规划），`legs` / `totals` 结构与 3.3 完全一致。
+- **单一方式失败不影响整体**：`available=false`，`error` 为 `{"code","message","hint"}`，`legs=[]`，`totals` 为 0（`distance_m=0`、`duration_s=0`、`cost={"total":0,"breakdown":[]}`），其余方式正常返回。
+- `points` 的地理编码只执行一次，5 种方式共享结果；整体 `mode` 字段标识 `live | demo`。
+- `summary` 为该方式整程可读摘要；公交为换乘摘要，其他方式可为道路摘要或空字符串。
+- 步行 / 骑行 / 驾车 / 打车的 `legs[].steps` 建议给出简化路径指令（最多 10 条，`type` 为对应方式），供前端展示“路径”；公交仍为乘车步骤。
+- 其他校验错误（缺少地点、地址解析失败等）与 3.3 一致，返回 4xx 统一错误结构。
 
 ## 4. 费用模型（最小实现）
 

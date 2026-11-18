@@ -72,8 +72,8 @@ def _as_point_spec(raw: Any, index: int) -> dict[str, Any]:
     }
 
 
-def validate_payload(payload: Any) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
-    """校验请求体，返回 (points_spec, modes, options)；不合法抛 ApiError。"""
+def _validate_points(payload: Any) -> list[dict[str, Any]]:
+    """校验 points 字段并归一化成 point spec 列表（plan / compare 共用）。"""
     if not isinstance(payload, dict):
         raise _invalid("请求体必须是 JSON 对象", "")
 
@@ -85,7 +85,12 @@ def validate_payload(payload: Any) -> tuple[list[dict[str, Any]], list[str], dic
     if len(raw_points) > MAX_POINTS:
         raise _invalid(f"最多支持 {MAX_POINTS} 个地点", f"当前提供 {len(raw_points)} 个")
 
-    points_spec = [_as_point_spec(raw, index) for index, raw in enumerate(raw_points)]
+    return [_as_point_spec(raw, index) for index, raw in enumerate(raw_points)]
+
+
+def validate_payload(payload: Any) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    """校验 /api/plan 请求体，返回 (points_spec, modes, options)；不合法抛 ApiError。"""
+    points_spec = _validate_points(payload)
 
     raw_modes = payload.get("modes")
     if not isinstance(raw_modes, list):
@@ -107,6 +112,13 @@ def validate_payload(payload: Any) -> tuple[list[dict[str, Any]], list[str], dic
 
     options = config.resolve_options(payload.get("options"))
     return points_spec, modes, options
+
+
+def validate_compare_payload(payload: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """校验 /api/compare 请求体：不需要 modes（传入则忽略），返回 (points_spec, options)。"""
+    points_spec = _validate_points(payload)
+    options = config.resolve_options(payload.get("options"))
+    return points_spec, options
 
 
 # --------------------------------------------------------------------- 地点解析
@@ -208,6 +220,74 @@ def _cost_for(mode: str, route_data: dict[str, Any], options: dict[str, Any]) ->
     )
 
 
+# --------------------------------------------------------------------- 单段构建
+def _live_route(
+    client: amap.AmapClient,
+    mode: str,
+    from_point: dict[str, Any],
+    to_point: dict[str, Any],
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    origin = format_location(from_point["location"]["lng"], from_point["location"]["lat"])
+    destination = format_location(to_point["location"]["lng"], to_point["location"]["lat"])
+    if mode == "walking":
+        return client.walking(origin, destination)
+    if mode == "bicycling":
+        return client.bicycling(origin, destination)
+    if mode in ("taxi", "driving"):
+        return client.driving(origin, destination, mode=mode)
+    return client.transit(
+        origin,
+        destination,
+        from_point.get("citycode") or "",
+        to_point.get("citycode") or "",
+        options.get("transit_strategy", 0),
+    )
+
+
+def _route_data(
+    mode: str,
+    from_point: dict[str, Any],
+    to_point: dict[str, Any],
+    options: dict[str, Any],
+    source: str,
+    client: amap.AmapClient | None = None,
+) -> dict[str, Any]:
+    if source == "demo":
+        return demo.route(mode, from_point, to_point, options)
+    if client is None:
+        raise ApiError("INTERNAL_ERROR", "内部错误：缺少高德客户端", "")
+    return _live_route(client, mode, from_point, to_point, options)
+
+
+def _build_leg(
+    index: int,
+    mode: str,
+    points: list[dict[str, Any]],
+    options: dict[str, Any],
+    source: str,
+    client: amap.AmapClient | None = None,
+) -> dict[str, Any]:
+    from_point, to_point = points[index], points[index + 1]
+    route_data = _route_data(mode, from_point, to_point, options, source, client)
+    cost, cost_warnings = _cost_for(mode, route_data, options)
+    warnings = list(route_data.get("warnings") or []) + cost_warnings
+    return _assemble_leg(index, mode, from_point, to_point, route_data, cost, warnings)
+
+
+def _build_legs(
+    modes: list[str],
+    points: list[dict[str, Any]],
+    options: dict[str, Any],
+    source: str,
+    client: amap.AmapClient | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        _build_leg(index, mode, points, options, source, client)
+        for index, mode in enumerate(modes)
+    ]
+
+
 # --------------------------------------------------------------------- 主流程
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -221,45 +301,40 @@ def summarize_totals(legs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _empty_totals() -> dict[str, Any]:
+    return {"distance_m": 0, "duration_s": 0, "cost": {"total": 0.0, "breakdown": []}}
+
+
+def _mode_summary(legs: list[dict[str, Any]]) -> str:
+    """整程可读摘要：把各段摘要（换乘/道路）按顺序拼接。"""
+    parts = [str(leg.get("summary") or "").strip() for leg in legs]
+    return " → ".join(part for part in parts if part)[:200]
+
+
+def _unavailable_mode(mode: str, error: ApiError) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "mode_label": config.MODE_LABELS[mode],
+        "available": False,
+        "error": error.to_dict()["error"],
+        "legs": [],
+        "totals": _empty_totals(),
+        "summary": "",
+    }
+
+
 def plan(payload: Any) -> dict[str, Any]:
     points_spec, modes, options = validate_payload(payload)
     is_demo, _reason = config.demo_state()
 
     if is_demo:
         points = resolve_points_demo(points_spec)
-        legs: list[dict[str, Any]] = []
-        for index, mode in enumerate(modes):
-            from_point, to_point = points[index], points[index + 1]
-            route_data = demo.route(mode, from_point, to_point, options)
-            cost, cost_warnings = _cost_for(mode, route_data, options)
-            warnings = list(route_data.get("warnings") or []) + cost_warnings
-            legs.append(_assemble_leg(index, mode, from_point, to_point, route_data, cost, warnings))
+        legs = _build_legs(modes, points, options, "demo")
         source = "demo"
     else:
         client = amap.AmapClient(config.get_amap_key())
         points = resolve_points_live(points_spec, client)
-        legs = []
-        for index, mode in enumerate(modes):
-            from_point, to_point = points[index], points[index + 1]
-            origin = format_location(from_point["location"]["lng"], from_point["location"]["lat"])
-            destination = format_location(to_point["location"]["lng"], to_point["location"]["lat"])
-            if mode == "walking":
-                route_data = client.walking(origin, destination)
-            elif mode == "bicycling":
-                route_data = client.bicycling(origin, destination)
-            elif mode in ("taxi", "driving"):
-                route_data = client.driving(origin, destination)
-            else:  # transit
-                route_data = client.transit(
-                    origin,
-                    destination,
-                    from_point.get("citycode") or "",
-                    to_point.get("citycode") or "",
-                    options.get("transit_strategy", 0),
-                )
-            cost, cost_warnings = _cost_for(mode, route_data, options)
-            warnings = list(route_data.get("warnings") or []) + cost_warnings
-            legs.append(_assemble_leg(index, mode, from_point, to_point, route_data, cost, warnings))
+        legs = _build_legs(modes, points, options, "live", client)
         source = "live"
 
     return {
@@ -268,4 +343,58 @@ def plan(payload: Any) -> dict[str, Any]:
         "points": points,
         "legs": legs,
         "totals": summarize_totals(legs),
+    }
+
+
+def compare(payload: Any) -> dict[str, Any]:
+    """一次对比 5 种交通方式（契约 3.4）。
+
+    地点只解析一次供 5 种方式共享；某种方式失败时隔离为 available=false，
+    整体仍返回 200。
+    """
+    points_spec, options = validate_compare_payload(payload)
+    is_demo, _reason = config.demo_state()
+
+    if is_demo:
+        points = resolve_points_demo(points_spec)
+        source = "demo"
+        client: amap.AmapClient | None = None
+    else:
+        client = amap.AmapClient(config.get_amap_key())
+        points = resolve_points_live(points_spec, client)
+        source = "live"
+
+    legs_per_mode = len(points) - 1
+    modes_result: list[dict[str, Any]] = []
+    for mode in config.VALID_MODES:
+        try:
+            legs = _build_legs([mode] * legs_per_mode, points, options, source, client)
+        except ApiError as exc:
+            modes_result.append(_unavailable_mode(mode, exc))
+            continue
+        except Exception:  # 单一方式异常也要隔离，避免影响整体对比
+            modes_result.append(
+                _unavailable_mode(
+                    mode,
+                    ApiError("INTERNAL_ERROR", "该交通方式规划失败", "可尝试其他交通方式"),
+                )
+            )
+            continue
+        modes_result.append(
+            {
+                "mode": mode,
+                "mode_label": config.MODE_LABELS[mode],
+                "available": True,
+                "error": None,
+                "legs": legs,
+                "totals": summarize_totals(legs),
+                "summary": _mode_summary(legs),
+            }
+        )
+
+    return {
+        "mode": source,
+        "generated_at": _now_iso(),
+        "points": points,
+        "modes": modes_result,
     }

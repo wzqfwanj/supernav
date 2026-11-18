@@ -84,6 +84,72 @@ def _route_polyline(steps: Any) -> list[list[float]]:
     return limit_points(_polyline_points(steps), MAX_POLYLINE_POINTS)
 
 
+#: 步行/骑行/驾车/打车 leg 的简化路径步骤上限（契约 3.4）
+MAX_ROUTE_STEPS = 10
+
+
+def _step_int(step: dict[str, Any], keys: tuple[str, ...]) -> int:
+    for key in keys:
+        value = max(0, as_int(step.get(key)))
+        if value:
+            return value
+    return 0
+
+
+def _step_duration(step: dict[str, Any]) -> int:
+    """耗时可能直接给出，也可能在 ``cost.duration`` 里，字段可能是字符串。"""
+    duration = _step_int(step, ("duration", "step_duration", "duration_s"))
+    if duration:
+        return duration
+    cost = step.get("cost") if isinstance(step.get("cost"), dict) else {}
+    return max(0, as_int(cost.get("duration")))
+
+
+def _step_text(step: dict[str, Any]) -> str:
+    for key in ("instruction", "road_name", "road", "assistant_action", "action"):
+        text = as_text(step.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _simple_route_steps(raw_steps: Any, mode: str) -> tuple[list[dict[str, Any]], str]:
+    """把 v5 ``paths[0].steps`` 转成最多 10 条简化步骤与可读摘要。
+
+    高德字段可能是字符串或数字，``distance``/耗时也可能叫 ``step_distance``/
+    ``cost.duration``；缺失时降级而不是报错。
+    """
+    if not isinstance(raw_steps, list):
+        return [], ""
+    steps: list[dict[str, Any]] = []
+    roads: list[str] = []
+    for raw in raw_steps:
+        if not isinstance(raw, dict):
+            continue
+        distance = _step_int(raw, ("distance", "step_distance", "distance_m"))
+        duration = _step_duration(raw)
+        road = as_text(raw.get("road_name")) or as_text(raw.get("road"))
+        text = _step_text(raw)
+        if not text:
+            text = f"{distance} 米" if distance else ""
+        if not text and not distance and not duration:
+            continue
+        steps.append(
+            {"type": mode, "text": text, "distance_m": distance, "duration_s": duration}
+        )
+        if road and road not in roads:
+            roads.append(road)
+        if len(steps) >= MAX_ROUTE_STEPS:
+            break
+    if roads:
+        summary = " → ".join(roads[:4])
+    else:
+        fallback = [step["text"] for step in steps if step["text"]][:3]
+        summary = " → ".join(fallback)
+    return steps, summary[:200]
+
+
+
 class AmapClient:
     """同一次规划请求复用一个实例（复用 TCP 连接），Key 仅保存在实例内部。"""
 
@@ -171,7 +237,8 @@ class AmapClient:
         }
 
     # ---------------------------------------------------------------- 路径规划
-    def driving(self, origin: str, destination: str) -> dict[str, Any]:
+    def driving(self, origin: str, destination: str, mode: str = "driving") -> dict[str, Any]:
+        """驾车路线；``mode="taxi"`` 时复用同一条驾车路线但 steps 标记为打车。"""
         data = self._get(
             "/v5/direction/driving",
             {
@@ -181,21 +248,21 @@ class AmapClient:
                 "strategy": "32",
             },
         )
-        return self._parse_simple_route(data, with_cost_fields=True)
+        return self._parse_simple_route(data, mode, with_cost_fields=True)
 
     def walking(self, origin: str, destination: str) -> dict[str, Any]:
         data = self._get(
             "/v5/direction/walking",
             {"origin": origin, "destination": destination, "show_fields": "cost,navi,polyline"},
         )
-        return self._parse_simple_route(data)
+        return self._parse_simple_route(data, "walking")
 
     def bicycling(self, origin: str, destination: str) -> dict[str, Any]:
         data = self._get(
             "/v5/direction/bicycling",
             {"origin": origin, "destination": destination, "show_fields": "cost,navi,polyline"},
         )
-        return self._parse_simple_route(data)
+        return self._parse_simple_route(data, "bicycling")
 
     def transit(
         self,
@@ -222,7 +289,7 @@ class AmapClient:
 
     # ---------------------------------------------------------------- 解析实现
     def _parse_simple_route(
-        self, data: dict[str, Any], with_cost_fields: bool = False
+        self, data: dict[str, Any], mode: str, with_cost_fields: bool = False
     ) -> dict[str, Any]:
         route = data.get("route") if isinstance(data.get("route"), dict) else {}
         paths = route.get("paths") if isinstance(route.get("paths"), list) else []
@@ -240,14 +307,15 @@ class AmapClient:
         if with_cost_fields and taxi_cost is None:
             taxi_cost = as_float_opt(cost.get("taxi_cost"))
         tolls = as_float_opt(cost.get("tolls")) if with_cost_fields else None
+        steps, summary = _simple_route_steps(path.get("steps"), mode)
         return {
             "distance_m": distance,
             "duration_s": duration,
             "taxi_cost": taxi_cost,
             "tolls": tolls,
             "transit_fee": None,
-            "summary": "",
-            "steps": [],
+            "summary": summary,
+            "steps": steps,
             "polyline": _route_polyline(path.get("steps")),
             "warnings": warnings,
         }
@@ -441,6 +509,7 @@ __all__ = [
     "BASE_URL",
     "TIMEOUT_S",
     "MAX_POLYLINE_POINTS",
+    "MAX_ROUTE_STEPS",
     "polyline_from_steps",
     "format_location",
 ]

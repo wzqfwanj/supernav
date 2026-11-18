@@ -4,6 +4,10 @@
  * SuperNav · 交通规划 — 前端逻辑
  * 纯原生 JS（无框架、无构建、无外部依赖）。
  * 所有接口字段与 docs/API-CONTRACT.md 保持一致；费用一律以后端返回为准，前端只做展示。
+ *
+ * 两种规划模式：
+ * - 方式对比（默认）：POST /api/compare，一次对比 5 种方式的路线、耗时与费用；
+ * - 组合行程：POST /api/plan，逐段选择交通方式后汇总。
  */
 (function () {
   // ===== 常量 =====
@@ -12,7 +16,13 @@
   const MIN_POINTS = 2;
   const MAX_POINTS = 10;
   const DEFAULT_MODE = 'walking';
-  const REQUEST_TIMEOUT_MS = 45000;
+  const PLAN_MODE_COMPARE = 'compare';
+  const PLAN_MODE_COMBINE = 'combine';
+  const PLAN_TIMEOUT_MS = 45000;
+  const COMPARE_TIMEOUT_MS = 40000;
+  // 方式卡展示顺序：公交/地铁 → 驾车 → 打车 → 骑行 → 步行
+  // （契约 /api/compare 的 modes 数组顺序为 walking、bicycling、transit、taxi、driving，前端按交互要求重排展示）
+  const COMPARE_ORDER = ['transit', 'driving', 'taxi', 'bicycling', 'walking'];
 
   const FALLBACK_MODES = [
     { value: 'walking', label: '步行' },
@@ -75,11 +85,16 @@
     modes: [DEFAULT_MODE],
     modesMeta: FALLBACK_MODES.map(copyMode),
     defaults: Object.assign({}, FALLBACK_DEFAULTS),
+    planMode: PLAN_MODE_COMPARE,
+    resultKind: null,
     settingsTouched: false,
     statusLoaded: false,
     status: null,
     loading: false,
-    lastResult: null
+    lastResult: null,
+    lastCompare: null,
+    compareEntries: [],
+    selectedCompareMode: null
   };
 
   const dom = {};
@@ -291,6 +306,9 @@
       statusNotice: 'status-notice',
       statusNoticeText: 'status-notice-text',
       statusRetry: 'status-retry',
+      plannerSub: 'planner-sub',
+      modeSwitchHint: 'mode-switch-hint',
+      requestStatus: 'request-status',
       planForm: 'plan-form',
       pointsList: 'points-list',
       pointsHint: 'points-hint',
@@ -309,6 +327,14 @@
       alertDismiss: 'alert-dismiss',
       result: 'result',
       resultSource: 'result-source',
+      compareSection: 'compare-section',
+      compareGrid: 'compare-grid',
+      modeError: 'mode-error',
+      modeErrorMessage: 'mode-error-message',
+      modeErrorHint: 'mode-error-hint',
+      detail: 'detail',
+      detailMode: 'detail-mode',
+      detailSummary: 'detail-summary',
       totalsDistance: 'totals-distance',
       totalsDuration: 'totals-duration',
       totalsCost: 'totals-cost',
@@ -326,6 +352,7 @@
       dom[key] = document.getElementById(ids[key]);
     });
     dom.themeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-theme-choice]'));
+    dom.planModeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-plan-mode]'));
   }
 
   // ===== 主题 =====
@@ -347,6 +374,33 @@
     if (persist) {
       safeSetItem(THEME_KEY, next);
     }
+  }
+
+  // ===== 规划模式（方式对比 / 组合行程）=====
+  function setPlanMode(mode) {
+    const next = mode === PLAN_MODE_COMBINE ? PLAN_MODE_COMBINE : PLAN_MODE_COMPARE;
+    if (state.planMode === next || state.loading) {
+      return;
+    }
+    state.planMode = next;
+    updatePlanModeUI();
+    renderForm();
+    clearAlert();
+    hideResult();
+  }
+
+  function updatePlanModeUI() {
+    const isCompare = state.planMode === PLAN_MODE_COMPARE;
+    dom.planModeButtons.forEach(function (button) {
+      const active = button.getAttribute('data-plan-mode') === state.planMode;
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    dom.plannerSub.textContent = isCompare
+      ? '一次对比步行、骑行、公交/地铁、打车、驾车 5 种方式的路线、耗时与费用；也可切换到「组合行程」逐段搭配。'
+      : '为每一段单独选择交通方式，按组合计算全程合计；也可切换回「方式对比」。';
+    dom.modeSwitchHint.textContent = isCompare
+      ? '输入起点与终点（可加途经点）→「开始规划」一次对比 5 种方式 → 点击卡片查看详情。'
+      : '为每段选择交通方式 →「开始规划」生成一份组合行程详情。';
   }
 
   // ===== 表单 =====
@@ -389,7 +443,7 @@
     clear(dom.pointsList);
     state.points.forEach(function (address, index) {
       dom.pointsList.appendChild(buildPointRow(address, index));
-      if (index < state.points.length - 1) {
+      if (state.planMode === PLAN_MODE_COMBINE && index < state.points.length - 1) {
         dom.pointsList.appendChild(buildModeRow(index));
       }
     });
@@ -509,6 +563,12 @@
 
   function updatePointsHint() {
     const count = state.points.length;
+    if (state.planMode === PLAN_MODE_COMPARE) {
+      dom.pointsHint.textContent =
+        '共 ' + count + ' 个地点、' + Math.max(0, count - 1) + ' 段；最多 ' + MAX_POINTS +
+        ' 个地点。点击「开始规划」将一次对比 5 种交通方式。';
+      return;
+    }
     dom.pointsHint.textContent =
       '共 ' + count + ' 个地点、' + Math.max(0, count - 1) + ' 段；最多 ' + MAX_POINTS + ' 个地点，每段可单独选择交通方式。';
   }
@@ -756,29 +816,41 @@
       };
     }
 
-    normalizeModes();
-    if (state.modes.length !== trimmed.length - 1) {
-      return { message: '交通方式数量与路段数量不一致，请刷新页面后重试。' };
-    }
-
-    const available = state.modesMeta.map(function (mode) {
-      return mode.value;
-    });
-    for (let i = 0; i < state.modes.length; i += 1) {
-      if (available.indexOf(state.modes[i]) < 0) {
-        return { message: '第 ' + (i + 1) + ' 段的交通方式无效，请重新选择。' };
+    if (state.planMode === PLAN_MODE_COMBINE) {
+      normalizeModes();
+      if (state.modes.length !== trimmed.length - 1) {
+        return { message: '交通方式数量与路段数量不一致，请刷新页面后重试。' };
+      }
+      const available = state.modesMeta.map(function (mode) {
+        return mode.value;
+      });
+      for (let i = 0; i < state.modes.length; i += 1) {
+        if (available.indexOf(state.modes[i]) < 0) {
+          return { message: '第 ' + (i + 1) + ' 段的交通方式无效，请重新选择。' };
+        }
       }
     }
     return null;
   }
 
-  function buildPayload() {
+  function buildPointsPayload() {
+    return state.points.map(function (address) {
+      return { address: String(address || '').trim() };
+    });
+  }
+
+  function buildPlanPayload() {
     normalizeModes();
     return {
-      points: state.points.map(function (address) {
-        return { address: String(address || '').trim() };
-      }),
+      points: buildPointsPayload(),
       modes: state.modes.slice(),
+      options: buildOptions()
+    };
+  }
+
+  function buildComparePayload() {
+    return {
+      points: buildPointsPayload(),
       options: buildOptions()
     };
   }
@@ -857,19 +929,19 @@
     };
   }
 
-  // ===== 规划请求 =====
-  async function requestPlan(payload) {
+  // ===== 接口请求 =====
+  async function requestEndpoint(path, payload, timeoutMs, hints) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     let timer = null;
     if (controller) {
       timer = window.setTimeout(function () {
         controller.abort();
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
     }
 
     let response;
     try {
-      response = await fetch('api/plan', {
+      response = await fetch(path, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -881,8 +953,10 @@
     } catch (error) {
       if (error && error.name === 'AbortError') {
         throw new PlanError(
-          '请求超时（超过 ' + Math.round(REQUEST_TIMEOUT_MS / 1000) + ' 秒）。',
-          '后端可能正在等待高德接口，请稍后重试；若持续超时请检查后端日志。'
+          '请求超时（超过 ' + Math.round(timeoutMs / 1000) + ' 秒）。',
+          hints && hints.timeout
+            ? hints.timeout
+            : '后端可能正在等待高德接口，请稍后重试；若持续超时请检查后端日志。'
         );
       }
       throw new PlanError(
@@ -916,6 +990,11 @@
         text ? '响应片段：' + text.replace(/\s+/g, ' ').slice(0, 200) : ''
       );
     }
+    return data;
+  }
+
+  async function requestPlan(payload) {
+    const data = await requestEndpoint('api/plan', payload, PLAN_TIMEOUT_MS, {});
     if (!Array.isArray(data.legs) || !data.totals || typeof data.totals !== 'object') {
       throw new PlanError(
         '后端响应缺少 legs / totals 字段，与接口契约不符。',
@@ -925,14 +1004,40 @@
     return data;
   }
 
+  async function requestCompare(payload) {
+    const data = await requestEndpoint('api/compare', payload, COMPARE_TIMEOUT_MS, {
+      timeout: '对比 5 种方式需要多次路径规划，可能较慢；请稍后重试，或检查后端日志。'
+    });
+    if (!Array.isArray(data.modes) || data.modes.length === 0) {
+      throw new PlanError(
+        '后端响应缺少 modes 数组，与 /api/compare 契约不符。',
+        '请检查后端输出结构（docs/API-CONTRACT.md 第 3.4 节）。'
+      );
+    }
+    return data;
+  }
+
+  // ===== 提交 / loading =====
   function setLoading(loading) {
     state.loading = loading;
+    const isCompare = state.planMode === PLAN_MODE_COMPARE;
     dom.submitBtn.disabled = loading;
     dom.submitBtn.classList.toggle('is-loading', loading);
     dom.submitBtn.setAttribute('aria-busy', loading ? 'true' : 'false');
-    dom.submitLabel.textContent = loading ? '规划中…' : '开始规划';
+    dom.submitLabel.textContent = loading
+      ? (isCompare ? '正在对比 5 种方式…' : '规划中…')
+      : '开始规划';
     dom.planForm.classList.toggle('is-loading', loading);
     dom.result.classList.toggle('is-loading', loading);
+    dom.planModeButtons.forEach(function (button) {
+      button.disabled = loading;
+    });
+    if (dom.requestStatus) {
+      dom.requestStatus.textContent = loading
+        ? (isCompare ? '正在对比 5 种方式，请稍候…' : '正在规划，请稍候…')
+        : '';
+      dom.requestStatus.hidden = !loading;
+    }
   }
 
   async function handleSubmit() {
@@ -949,7 +1054,9 @@
       }
       showAlert({
         message: validation.message,
-        hint: validation.hint || '请检查地点与每段的交通方式后重试。'
+        hint: validation.hint || (state.planMode === PLAN_MODE_COMPARE
+          ? '请检查地点后重试。'
+          : '请检查地点与每段的交通方式后重试。')
       });
       if (typeof validation.focusIndex === 'number') {
         focusPointInput(validation.focusIndex);
@@ -957,18 +1064,23 @@
       return;
     }
 
-    const payload = buildPayload();
+    const isCompare = state.planMode === PLAN_MODE_COMPARE;
     setLoading(true);
     try {
-      const data = await requestPlan(payload);
-      renderResult(data);
+      if (isCompare) {
+        const compareData = await requestCompare(buildComparePayload());
+        renderCompareResult(compareData);
+      } else {
+        const planData = await requestPlan(buildPlanPayload());
+        renderPlanResult(planData);
+      }
     } catch (error) {
       hideResult();
       if (error instanceof PlanError) {
         showAlert({ message: error.message, hint: error.hint });
       } else {
         showAlert({
-          message: '规划失败：发生了未预期的错误。',
+          message: (isCompare ? '方式对比失败：' : '规划失败：') + '发生了未预期的错误。',
           hint: error && error.message ? String(error.message) : ''
         });
       }
@@ -981,25 +1093,311 @@
   function hideResult() {
     dom.result.hidden = true;
     dom.emptyState.hidden = false;
+    state.resultKind = null;
+    state.compareEntries = [];
+    state.selectedCompareMode = null;
+    state.lastCompare = null;
   }
 
-  function renderResult(data) {
+  function scrollResultIntoView(wasHidden) {
+    if (!wasHidden) {
+      return;
+    }
+    try {
+      dom.result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (error) {
+      dom.result.scrollIntoView();
+    }
+  }
+
+  function hideDetailModeHeader() {
+    dom.detailMode.hidden = true;
+    clear(dom.detailMode);
+    dom.detailMode.removeAttribute('data-mode');
+    dom.detailSummary.textContent = '';
+    dom.detailSummary.hidden = true;
+  }
+
+  function renderPlanResult(data) {
     state.lastResult = data;
+    state.resultKind = 'plan';
+    state.compareEntries = [];
+    state.selectedCompareMode = null;
+    state.lastCompare = null;
     const wasHidden = dom.result.hidden;
-    renderTotals(data);
+    dom.compareSection.hidden = true;
+    dom.modeError.hidden = true;
+    dom.detail.hidden = false;
+    hideDetailModeHeader();
+    renderTotals(data, true);
     renderLegs(data);
     renderRoute(Array.isArray(data.legs) ? data.legs : []);
     updateSourceBadge(data.mode);
     clearAlert();
     dom.result.hidden = false;
     dom.emptyState.hidden = true;
-    if (wasHidden) {
-      try {
-        dom.result.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } catch (error) {
-        dom.result.scrollIntoView();
+    scrollResultIntoView(wasHidden);
+  }
+
+  // ----- 方式对比 -----
+  function zeroTotals() {
+    return { distance_m: 0, duration_s: 0, cost: { total: 0, breakdown: [] } };
+  }
+
+  function normalizeCompareError(rawError, mode) {
+    if (rawError && typeof rawError === 'object') {
+      return {
+        code: isNonEmptyString(rawError.code) ? rawError.code : '',
+        message: isNonEmptyString(rawError.message) ? rawError.message : '该方式暂无可用路线。',
+        hint: isNonEmptyString(rawError.hint) ? rawError.hint : '可切换到其他方式查看可用路线。'
+      };
+    }
+    if (isNonEmptyString(rawError)) {
+      return { code: '', message: rawError, hint: '可切换到其他方式查看可用路线。' };
+    }
+    return {
+      code: '',
+      message: '该方式暂无可用路线。',
+      hint: modeLabel(mode) + ' 未能返回路线，可切换到其他方式查看。'
+    };
+  }
+
+  function normalizeCompareEntry(raw, mode) {
+    const entry = raw && typeof raw === 'object' ? raw : null;
+    if (!entry) {
+      return {
+        mode: mode,
+        mode_label: modeLabel(mode),
+        available: false,
+        legs: [],
+        totals: zeroTotals(),
+        summary: '',
+        error: {
+          code: '',
+          message: '后端未返回该方式的结果。',
+          hint: '请检查后端 /api/compare 响应是否包含全部 5 种方式（docs/API-CONTRACT.md 3.4）。'
+        }
+      };
+    }
+    let available = false;
+    if (typeof entry.available === 'boolean') {
+      available = entry.available;
+    } else {
+      available = Array.isArray(entry.legs);
+    }
+    const legs = available && Array.isArray(entry.legs) ? entry.legs : [];
+    const totals = available && entry.totals && typeof entry.totals === 'object' ? entry.totals : zeroTotals();
+    return {
+      mode: mode,
+      mode_label: isNonEmptyString(entry.mode_label) ? entry.mode_label : modeLabel(mode),
+      available: available,
+      legs: legs,
+      totals: totals,
+      summary: isNonEmptyString(entry.summary) ? entry.summary : '',
+      error: available ? null : normalizeCompareError(entry.error, mode)
+    };
+  }
+
+  function buildCompareEntries(data) {
+    const rawModes = Array.isArray(data.modes) ? data.modes : [];
+    const byMode = {};
+    rawModes.forEach(function (entry) {
+      if (entry && typeof entry === 'object' && isNonEmptyString(entry.mode)) {
+        byMode[entry.mode] = entry;
+      }
+    });
+    const order = COMPARE_ORDER.slice();
+    rawModes.forEach(function (entry) {
+      if (entry && typeof entry === 'object' && isNonEmptyString(entry.mode) && order.indexOf(entry.mode) < 0) {
+        order.push(entry.mode);
+      }
+    });
+    return order.map(function (mode) {
+      return normalizeCompareEntry(byMode[mode], mode);
+    });
+  }
+
+  function pickInitialCompareMode(entries) {
+    for (let i = 0; i < COMPARE_ORDER.length; i += 1) {
+      for (let j = 0; j < entries.length; j += 1) {
+        if (entries[j].mode === COMPARE_ORDER[i] && entries[j].available) {
+          return entries[j].mode;
+        }
       }
     }
+    return entries.length ? entries[0].mode : null;
+  }
+
+  function findCompareEntry(mode) {
+    for (let i = 0; i < state.compareEntries.length; i += 1) {
+      if (state.compareEntries[i].mode === mode) {
+        return state.compareEntries[i];
+      }
+    }
+    return null;
+  }
+
+  function buildCompareMetric(label, value) {
+    const wrap = el('span', 'compare-metric');
+    wrap.appendChild(el('span', 'compare-metric-label', label));
+    wrap.appendChild(el('strong', 'compare-metric-value', value));
+    return wrap;
+  }
+
+  function renderCompareCards() {
+    clear(dom.compareGrid);
+    state.compareEntries.forEach(function (entry) {
+      const card = el('button', 'compare-item');
+      card.type = 'button';
+      card.setAttribute('data-compare-mode', entry.mode);
+      card.setAttribute('aria-pressed', entry.mode === state.selectedCompareMode ? 'true' : 'false');
+      card.title = entry.available
+        ? '查看「' + entry.mode_label + '」的路线详情'
+        : '点击查看「' + entry.mode_label + '」不可用的原因';
+      if (!entry.available) {
+        card.classList.add('is-unavailable');
+      }
+      if (entry.mode === state.selectedCompareMode) {
+        card.classList.add('is-selected');
+      }
+
+      const head = el('span', 'compare-head');
+      const dot = el('span', 'mode-dot');
+      dot.style.backgroundColor = modeColor(entry.mode);
+      head.appendChild(dot);
+      head.appendChild(el('span', 'compare-name', entry.mode_label));
+      if (!entry.available) {
+        head.appendChild(el('span', 'compare-badge', '无可用路线'));
+      }
+      card.appendChild(head);
+
+      if (entry.available) {
+        const metrics = el('span', 'compare-metrics');
+        metrics.appendChild(buildCompareMetric('耗时', formatDuration(entry.totals.duration_s)));
+        metrics.appendChild(buildCompareMetric('里程', formatDistance(entry.totals.distance_m)));
+        metrics.appendChild(buildCompareMetric('费用', formatMoney(entry.totals.cost && entry.totals.cost.total)));
+        card.appendChild(metrics);
+        if (isNonEmptyString(entry.summary)) {
+          card.appendChild(el('span', 'compare-summary', entry.summary));
+        }
+      } else {
+        card.appendChild(el('span', 'compare-unavailable', '暂无路线 · 点击查看原因'));
+      }
+
+      card.addEventListener('click', function () {
+        selectCompareMode(entry.mode);
+      });
+      dom.compareGrid.appendChild(card);
+    });
+  }
+
+  function updateCompareSelection() {
+    const cards = dom.compareGrid.querySelectorAll('[data-compare-mode]');
+    Array.prototype.forEach.call(cards, function (card) {
+      const selected = card.getAttribute('data-compare-mode') === state.selectedCompareMode;
+      card.classList.toggle('is-selected', selected);
+      card.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    });
+  }
+
+  function renderCompareResult(data) {
+    state.lastCompare = data;
+    state.lastResult = null;
+    state.resultKind = 'compare';
+    state.compareEntries = buildCompareEntries(data);
+    state.selectedCompareMode = null;
+    const wasHidden = dom.result.hidden;
+    dom.compareSection.hidden = false;
+    dom.modeError.hidden = true;
+    dom.detail.hidden = false;
+    renderCompareCards();
+    updateSourceBadge(data.mode);
+    clearAlert();
+    const initialMode = pickInitialCompareMode(state.compareEntries);
+    if (initialMode) {
+      selectCompareMode(initialMode);
+    } else {
+      dom.detail.hidden = true;
+      showModeError(null);
+    }
+    dom.result.hidden = false;
+    dom.emptyState.hidden = true;
+    scrollResultIntoView(wasHidden);
+  }
+
+  function selectCompareMode(mode) {
+    if (state.resultKind !== 'compare') {
+      return;
+    }
+    const entry = findCompareEntry(mode) || state.compareEntries[0];
+    if (!entry) {
+      return;
+    }
+    state.selectedCompareMode = entry.mode;
+    updateCompareSelection();
+    if (!entry.available) {
+      dom.detail.hidden = true;
+      showModeError(entry);
+      return;
+    }
+    dom.modeError.hidden = true;
+    dom.detail.hidden = false;
+    renderCompareDetail(entry);
+  }
+
+  function renderCompareDetail(entry) {
+    const compareData = state.lastCompare || {};
+    const detailData = {
+      mode: compareData.mode,
+      generated_at: compareData.generated_at,
+      points: Array.isArray(compareData.points) ? compareData.points : [],
+      legs: entry.legs,
+      totals: entry.totals
+    };
+
+    dom.detailMode.hidden = false;
+    clear(dom.detailMode);
+    const dot = el('span', 'mode-dot');
+    dot.style.backgroundColor = modeColor(entry.mode);
+    dom.detailMode.appendChild(dot);
+    dom.detailMode.appendChild(document.createTextNode(entry.mode_label));
+    dom.detailMode.setAttribute('data-mode', entry.mode);
+
+    if (isNonEmptyString(entry.summary)) {
+      dom.detailSummary.textContent = entry.summary;
+      dom.detailSummary.hidden = false;
+    } else {
+      dom.detailSummary.textContent = '';
+      dom.detailSummary.hidden = true;
+    }
+
+    renderTotals(detailData, false);
+    renderLegs(detailData);
+    renderRoute(entry.legs);
+  }
+
+  function showModeError(entry) {
+    if (!entry) {
+      dom.modeErrorMessage.textContent = '没有可用的方式对比结果。';
+      dom.modeErrorHint.textContent = '请重新规划，或检查后端 /api/compare 是否正常返回。';
+      dom.modeErrorHint.hidden = false;
+      dom.modeError.hidden = false;
+      return;
+    }
+    const error = entry.error || {};
+    dom.modeErrorMessage.textContent =
+      '「' + entry.mode_label + '」' + (error.message || '该方式暂无可用路线。');
+    const hintParts = [];
+    if (error.hint) {
+      hintParts.push(error.hint);
+    }
+    if (error.code) {
+      hintParts.push('错误码：' + error.code);
+    }
+    const hint = hintParts.join('；');
+    dom.modeErrorHint.textContent = hint;
+    dom.modeErrorHint.hidden = !hint;
+    dom.modeError.hidden = false;
   }
 
   function updateSourceBadge(mode) {
@@ -1034,7 +1432,7 @@
     }
   }
 
-  function renderTotals(data) {
+  function renderTotals(data, showCombo) {
     const totals = data && data.totals && typeof data.totals === 'object' ? data.totals : {};
     const cost = totals.cost && typeof totals.cost === 'object' ? totals.cost : {};
     const totalAmount = parseNumber(cost.total);
@@ -1071,7 +1469,12 @@
       dom.totalsBreakdown.appendChild(item);
     }
 
-    renderCombo(Array.isArray(data.legs) ? data.legs : []);
+    if (showCombo === false) {
+      clear(dom.totalsCombo);
+      dom.totalsCombo.hidden = true;
+    } else {
+      renderCombo(Array.isArray(data.legs) ? data.legs : []);
+    }
 
     const generated = formatDateTime(data.generated_at);
     dom.generatedAt.textContent = generated ? '数据生成时间：' + generated : '';
@@ -1438,6 +1841,12 @@
       });
     });
 
+    dom.planModeButtons.forEach(function (button) {
+      button.addEventListener('click', function () {
+        setPlanMode(button.getAttribute('data-plan-mode'));
+      });
+    });
+
     dom.planForm.addEventListener('submit', function (event) {
       event.preventDefault();
       handleSubmit();
@@ -1522,6 +1931,7 @@
     cacheDom();
     renderTransitStrategies();
     initTheme();
+    updatePlanModeUI();
     renderExamples();
     applyDefaults();
     renderForm();

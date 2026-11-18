@@ -27,6 +27,15 @@ class PlanRequest(BaseModel):
     options: dict | None = Field(default=None, description="计价参数，全部可选")
 
 
+class CompareRequest(BaseModel):
+    """``/api/compare`` 请求体：不需要 modes（传入也忽略）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    points: list = Field(default_factory=list, description="2–10 个地点")
+    options: dict | None = Field(default=None, description="计价参数，全部可选")
+
+
 def _web_file(relative: str) -> Path | None:
     """在 web/ 目录内安全查找文件（防目录穿越）；不存在返回 None。"""
     web_root = config.WEB_DIR
@@ -119,6 +128,11 @@ def create_app() -> FastAPI:
     def plan_endpoint(payload: PlanRequest) -> dict:
         return planner.plan(payload.model_dump())
 
+    @app.post("/api/compare")
+    def compare_endpoint(payload: CompareRequest) -> dict:
+        """一次对比 5 种交通方式（前端「开始规划」默认调用）。"""
+        return planner.compare(payload.model_dump())
+
     # ------------------------------------------------------------ 静态托管 web/
     @app.get("/", include_in_schema=False)
     def index():
@@ -129,7 +143,7 @@ def create_app() -> FastAPI:
             {
                 "ok": True,
                 "message": "后端已启动，但前端页面尚未就绪（web/index.html 不存在）。",
-                "api": {"status": "/api/status", "plan": "/api/plan"},
+                "api": {"status": "/api/status", "plan": "/api/plan", "compare": "/api/compare"},
             }
         )
 

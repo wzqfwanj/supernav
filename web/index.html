@@ -56,7 +56,14 @@
     <section class="card planner" aria-labelledby="planner-title">
       <div class="card-head">
         <h2 id="planner-title">规划行程</h2>
-        <p class="card-sub">起点、途经点、终点逐段搭配交通方式，自动汇总全程路费。</p>
+        <p class="card-sub" id="planner-sub">一次对比步行、骑行、公交/地铁、打车、驾车 5 种方式的路线、耗时与费用；也可切换到「组合行程」逐段搭配。</p>
+      </div>
+      <div class="mode-switch-row">
+        <div class="plan-mode-switch" id="plan-mode-switch" role="group" aria-label="规划模式">
+          <button type="button" class="plan-mode-option" data-plan-mode="compare" aria-pressed="true">方式对比</button>
+          <button type="button" class="plan-mode-option" data-plan-mode="combine" aria-pressed="false">组合行程</button>
+        </div>
+        <p class="mode-switch-hint" id="mode-switch-hint">输入起点与终点（可加途经点）→「开始规划」一次对比 5 种方式 → 点击卡片查看详情。</p>
       </div>
       <form id="plan-form" novalidate autocomplete="off">
         <div class="points-list" id="points-list"></div>
@@ -68,6 +75,7 @@
             <span id="submit-label">开始规划</span>
           </button>
         </div>
+        <p class="request-status" id="request-status" role="status" hidden></p>
       </form>
       <div class="examples">
         <span class="examples-title">快捷示例</span>
@@ -112,56 +120,73 @@
     </section>
 
     <section class="result" id="result" aria-live="polite" hidden>
-      <div class="card totals-card">
-        <div class="totals-head">
-          <h2>全程合计</h2>
-          <span class="source-badge" id="result-source" data-mode="unknown">来源：未标注</span>
+      <section class="card compare-card" id="compare-section" aria-labelledby="compare-title" hidden>
+        <div class="card-head">
+          <h2 id="compare-title">方式对比</h2>
+          <p class="card-sub">点击卡片查看该方式的路线、耗时与费用明细；置灰表示暂无可用路线。</p>
         </div>
-        <p class="totals-combo" id="totals-combo" hidden></p>
-        <div class="totals-main">
-          <div class="stat">
-            <span class="stat-label">总里程</span>
-            <strong class="stat-value" id="totals-distance">—</strong>
-          </div>
-          <div class="stat">
-            <span class="stat-label">总耗时</span>
-            <strong class="stat-value" id="totals-duration">—</strong>
-          </div>
-          <div class="stat stat-cost">
-            <span class="stat-label">总路费</span>
-            <strong class="stat-value" id="totals-cost">—</strong>
-          </div>
-        </div>
-        <div class="totals-breakdown-wrap">
-          <h3 class="breakdown-title">费用明细</h3>
-          <ul class="breakdown" id="totals-breakdown"></ul>
-        </div>
-        <p class="totals-foot" id="generated-at" hidden></p>
+        <div class="compare-grid" id="compare-grid"></div>
+      </section>
+
+      <div class="card mode-error-card" id="mode-error" role="status" hidden>
+        <p class="mode-error-message" id="mode-error-message"></p>
+        <p class="mode-error-hint" id="mode-error-hint" hidden></p>
       </div>
 
-      <section class="card route-card" id="route-section" aria-labelledby="route-title" hidden>
-        <div class="card-head">
-          <h2 id="route-title">路线示意</h2>
-          <p class="card-sub">根据返回的 polyline 绘制的示意图，不代表真实比例。</p>
+      <div class="detail" id="detail">
+        <div class="card totals-card">
+          <div class="totals-head">
+            <h2>全程合计</h2>
+            <span class="detail-mode" id="detail-mode" hidden></span>
+            <span class="source-badge" id="result-source" data-mode="unknown">来源：未标注</span>
+          </div>
+          <p class="detail-summary" id="detail-summary" hidden></p>
+          <p class="totals-combo" id="totals-combo" hidden></p>
+          <div class="totals-main">
+            <div class="stat">
+              <span class="stat-label">总里程</span>
+              <strong class="stat-value" id="totals-distance">—</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">总耗时</span>
+              <strong class="stat-value" id="totals-duration">—</strong>
+            </div>
+            <div class="stat stat-cost">
+              <span class="stat-label">总路费</span>
+              <strong class="stat-value" id="totals-cost">—</strong>
+            </div>
+          </div>
+          <div class="totals-breakdown-wrap">
+            <h3 class="breakdown-title">费用明细</h3>
+            <ul class="breakdown" id="totals-breakdown"></ul>
+          </div>
+          <p class="totals-foot" id="generated-at" hidden></p>
         </div>
-        <div class="route-canvas" id="route-canvas"></div>
-        <ul class="route-legend" id="route-legend"></ul>
-      </section>
 
-      <section class="legs-section" aria-labelledby="legs-title">
-        <div class="legs-head">
-          <h2 id="legs-title">逐段明细</h2>
-          <span class="legs-count" id="legs-count"></span>
-        </div>
-        <div class="legs-list" id="legs-list"></div>
-      </section>
+        <section class="card route-card" id="route-section" aria-labelledby="route-title" hidden>
+          <div class="card-head">
+            <h2 id="route-title">路线示意</h2>
+            <p class="card-sub">根据返回的 polyline 绘制的示意图，不代表真实比例。</p>
+          </div>
+          <div class="route-canvas" id="route-canvas"></div>
+          <ul class="route-legend" id="route-legend"></ul>
+        </section>
 
-      <p class="foot-note">费用由后端按接口数据计算，仅供出行估算，实际以运营方为准。</p>
+        <section class="legs-section" aria-labelledby="legs-title">
+          <div class="legs-head">
+            <h2 id="legs-title">逐段明细</h2>
+            <span class="legs-count" id="legs-count"></span>
+          </div>
+          <div class="legs-list" id="legs-list"></div>
+        </section>
+
+        <p class="foot-note">费用由后端按接口数据计算，仅供出行估算，实际以运营方为准。</p>
+      </div>
     </section>
 
     <section class="card empty-state" id="empty-state">
       <p class="empty-title">还没有规划结果</p>
-      <p class="empty-text">填写起点与终点（可添加途经点），为每段选择交通方式，然后点击「开始规划」。</p>
+      <p class="empty-text">填写起点与终点（可添加途经点），点击「开始规划」一次对比 5 种交通方式；也可切换到「组合行程」逐段搭配。</p>
     </section>
   </main>
 

@@ -137,6 +137,66 @@ def main() -> int:
         check("步行段费用为 0", float(walking.get("cost", {}).get("total", -1)) == 0.0)
         check("公交段有票价明细", bool(legs[0].get("cost", {}).get("breakdown")))
 
+    # 3.5 方式对比（/api/compare，一次返回 5 种方式）
+    compare_body = {
+        "points": [
+            {"address": "北京南站"},
+            {"address": "故宫博物院"},
+            {"address": "北京西站"},
+        ],
+        "options": {"fuel_price": fuel_price, "fuel_consumption": fuel_consumption},
+    }
+    r = s.post(f"{BASE_URL}/api/compare", json=compare_body, timeout=TIMEOUT)
+    check("POST /api/compare 200", r.status_code == 200, f"{r.status_code} {r.text[:160]}")
+    if r.status_code == 200:
+        cmp_data = r.json()
+        check("compare.mode=demo", cmp_data.get("mode") == "demo", str(cmp_data.get("mode")))
+        cmp_modes = cmp_data.get("modes", [])
+        check("compare 返回 5 种方式", len(cmp_modes) == 5, str(len(cmp_modes)))
+        check(
+            "compare 方式顺序固定",
+            [m.get("mode") for m in cmp_modes]
+            == ["walking", "bicycling", "transit", "taxi", "driving"],
+            str([m.get("mode") for m in cmp_modes]),
+        )
+        ok_shape = True
+        ok_totals = True
+        ok_cost = True
+        zero_ok = True
+        for entry in cmp_modes:
+            ok_shape = ok_shape and set(entry) >= {
+                "mode",
+                "mode_label",
+                "available",
+                "error",
+                "legs",
+                "totals",
+                "summary",
+            }
+            if not entry.get("available"):
+                continue
+            legs = entry.get("legs", [])
+            totals = entry.get("totals", {})
+            ok_shape = ok_shape and len(legs) == 2
+            dist = sum(int(leg.get("distance_m", 0)) for leg in legs)
+            dur = sum(int(leg.get("duration_s", 0)) for leg in legs)
+            ok_totals = ok_totals and int(totals.get("distance_m", -1)) == dist
+            ok_totals = ok_totals and int(totals.get("duration_s", -1)) == dur
+            for leg in legs:
+                c = leg.get("cost", {})
+                ok_cost = ok_cost and approx(cost_sum(c), c.get("total", -1))
+            tc = totals.get("cost", {})
+            ok_cost = ok_cost and approx(cost_sum(tc), tc.get("total", -1))
+            if entry.get("mode") in ("walking", "bicycling"):
+                zero_ok = zero_ok and float(tc.get("total", -1)) == 0.0
+        check("compare 每项结构齐全且 2 段", ok_shape)
+        check("compare totals=逐段求和", ok_totals)
+        check("compare 费用明细=total", ok_cost)
+        check("compare 步行/骑行费用为 0", zero_ok)
+        transit_entry = next((m for m in cmp_modes if m.get("mode") == "transit"), {})
+        check("compare 公交有 summary", bool(transit_entry.get("summary")))
+        check("compare 无 Key 泄露", "amap_key" not in json.dumps(cmp_data, ensure_ascii=False).lower())
+
     # 4. 各方式单段（步行/骑行/公交/打车/驾车）
     for mode in ("walking", "bicycling", "transit", "taxi", "driving"):
         p = {
