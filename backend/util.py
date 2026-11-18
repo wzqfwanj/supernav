@@ -115,13 +115,27 @@ def limit_points(points: list[list[float]], limit: int = MAX_POLYLINE_POINTS) ->
 
 
 def extend_polyline(points: list[list[float]], raw: Any) -> None:
-    """把高德 ``"lng,lat;lng,lat;..."`` 折线字符串追加到 points。"""
-    if not isinstance(raw, str) or not raw.strip():
+    """把高德折线追加到 points。
+
+    高德 v5 的折线既有 ``"lng,lat;..."`` 字符串，也有嵌套对象/数组形式，
+    例如 ``{"polyline": "..."}`` 或 ``[{"polyline": "..."}]``，这里统一递归兼容。
+    """
+    if isinstance(raw, str):
+        if not raw.strip():
+            return
+        for chunk in raw.split(";"):
+            location = parse_location_text(chunk)
+            if location is not None:
+                points.append([round(location[0], 6), round(location[1], 6)])
         return
-    for chunk in raw.split(";"):
-        location = parse_location_text(chunk)
-        if location is not None:
-            points.append([round(location[0], 6), round(location[1], 6)])
+    if isinstance(raw, dict):
+        for key in ("polyline", "polylines"):
+            if key in raw:
+                extend_polyline(points, raw[key])
+        return
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            extend_polyline(points, item)
 
 
 def redact(text: Any, secret: str) -> str:

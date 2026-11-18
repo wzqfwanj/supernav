@@ -15,6 +15,7 @@ import requests
 
 from backend import amap, config, costs, demo, planner
 from backend.app import app
+from backend.errors import ApiError
 from backend.util import round2
 
 
@@ -197,32 +198,54 @@ TRANSIT_PAYLOAD = {
                 "cost": {"duration": "2400", "transit_fee": "5"},
                 "segments": [
                     {
+                        # 真实 v5：同一个 segment 同时含 walking 与 bus；
+                        # 折线为 {"polyline": "..."} 嵌套对象；耗时在 cost.duration
                         "walking": {
-                            "distance": "300",
-                            "duration": "240",
-                            "steps": [{"polyline": "116.378,39.865;116.379,39.866"}],
-                        }
-                    },
-                    {
+                            "distance": "185",
+                            "cost": {"duration": "237"},
+                            "steps": [{"polyline": {"polyline": "116.378,39.865;116.379,39.866"}}],
+                        },
                         "bus": {
                             "buslines": [
                                 {
-                                    "name": "地铁4号线",
+                                    "name": "地铁4号线大兴线(天宫院--安河桥北)",
                                     "type": "地铁线路",
-                                    "distance": "7000",
-                                    "duration": "1800",
+                                    "distance": "4834",
+                                    "cost": {"duration": "780"},
                                     "departure_stop": {"name": "北京南站"},
-                                    "arrival_stop": {"name": "故宫博物院"},
-                                    "polyline": "116.379,39.866;116.397,39.918",
+                                    "arrival_stop": {"name": "西单"},
+                                    "polyline": {
+                                        "polyline": "116.379,39.866;116.390,39.900;116.397,39.918"
+                                    },
                                 }
                             ]
-                        }
+                        },
+                    },
+                    {
+                        "walking": {
+                            "distance": "130",
+                            "cost": {"duration": "100"},
+                            "steps": [{"polyline": {"polyline": "116.397,39.918;116.398,39.919"}}],
+                        },
+                        "bus": {
+                            "buslines": [
+                                {
+                                    "name": "地铁1号线八通线(苹果园--环球度假区)",
+                                    "type": "地铁线路",
+                                    "distance": "1300",
+                                    "cost": {"duration": "200"},
+                                    "departure_stop": {"name": "西单"},
+                                    "arrival_stop": {"name": "天安门西"},
+                                    "polyline": {"polyline": "116.398,39.919;116.397,39.918"},
+                                }
+                            ]
+                        },
                     },
                     {
                         "walking": {
                             "distance": "200",
-                            "duration": "160",
-                            "steps": [{"polyline": "116.397,39.918;116.397,39.919"}],
+                            "cost": {"duration": "160"},
+                            "steps": [{"polyline": {"polyline": "116.397,39.918;116.397,39.919"}}],
                         }
                     },
                 ],
@@ -596,9 +619,19 @@ class TestLiveMode:
             "total": 5.0,
             "breakdown": [{"key": "transit_fare", "label": "公交/地铁票价", "amount": 5.0}],
         }
-        assert [step["type"] for step in leg["steps"]] == ["walking", "subway", "walking"]
-        assert "步行 300 米" in leg["summary"]
+        # 真实 v5 同一 segment 同时含 walking + bus，两类步骤都要保留
+        assert [step["type"] for step in leg["steps"]] == [
+            "walking",
+            "subway",
+            "walking",
+            "subway",
+            "walking",
+        ]
+        assert [step["distance_m"] for step in leg["steps"]] == [185, 4834, 130, 1300, 200]
+        assert all(step["duration_s"] > 0 for step in leg["steps"])
+        assert "步行 185 米" in leg["summary"]
         assert "地铁4号线" in leg["summary"]
+        assert "地铁1号线" in leg["summary"]
         assert leg["polyline"]
         transit_call = [item for item in log if item["url"].endswith("/transit/integrated")][0]
         assert transit_call["params"]["city1"] == "010"
@@ -871,3 +904,48 @@ class TestStatusAndStatic:
         }
         assert set(leg["cost"]) == {"total", "breakdown"}
         assert set(data["totals"]) == {"distance_m", "duration_s", "cost"}
+
+
+class TestAmapErrorHandling:
+    def test_retries_qps_error_then_succeeds(self, monkeypatch):
+        """10021（QPS 超限）应退避重试一次而不是直接失败。"""
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_QPS")
+        calls = {"n": 0}
+
+        def fake_get(self, url, params=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResponse(
+                    {
+                        "status": "0",
+                        "info": "CUQPS_HAS_EXCEEDED_THE_LIMIT",
+                        "infocode": "10021",
+                    }
+                )
+            return FakeResponse(GEOCODE_BY_ADDRESS["北京南站"])
+
+        monkeypatch.setattr(requests.Session, "get", fake_get)
+        monkeypatch.setattr(amap.time, "sleep", lambda _seconds: None)
+        client = amap.AmapClient("TEST_KEY_QPS")
+        result = client.geocode("北京南站")
+        assert result["citycode"] == "010"
+        assert calls["n"] == 2
+
+    def test_no_route_error_has_friendly_message_and_hint(self, monkeypatch):
+        """30007（无可用路线）应给出可读提示，而不是原始英文错误。"""
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_NOROUTE")
+        install_amap(
+            monkeypatch,
+            {
+                "/v5/direction/bicycling": {
+                    "status": "0",
+                    "info": "RESULTS_ARE_EMPTY",
+                    "infocode": "30007",
+                }
+            },
+        )
+        client = amap.AmapClient("TEST_KEY_NOROUTE")
+        with pytest.raises(ApiError) as exc:
+            client.bicycling("116.378,39.865", "116.397,39.918")
+        assert "未返回可用路线" in exc.value.message
+        assert "可换一种方式" in exc.value.hint

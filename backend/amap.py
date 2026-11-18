@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import requests
@@ -43,6 +44,19 @@ _KEY_INFOCODES = {
     "10013": "Key 签名校验失败",
 }
 _KEY_HINT = "请检查后端配置的 AMAP_KEY 是否为有效的「Web 服务」类型 Key"
+
+#: 可重试的高德错误码：QPS / 并发超限通常是瞬时的，退避后重试
+_RETRY_INFOCODES = {"10002", "10021"}
+_RETRY_DELAYS = (1.2, 2.5)
+
+#: 常见业务错误码的友好提示
+_INFO_HINTS = {
+    "10021": "高德接口请求过于频繁（QPS/并发超限），请稍后重试",
+    "30007": "高德未返回可用路线（该交通方式在此起终点可能不可用，可换一种方式或地点）",
+    "30001": "高德未找到有效起终点，请检查地址",
+    "20000": "高德请求参数有误，请检查地址或交通方式",
+    "20800": "高德规划失败，请稍后重试",
+}
 
 
 def _polyline_points(raw: Any) -> list[list[float]]:
@@ -83,36 +97,53 @@ class AmapClient:
             raise ApiError("KEY_MISSING", "未配置高德 Key", "请设置环境变量 AMAP_KEY 或 config.local.json")
         query = {key: value for key, value in params.items() if value is not None}
         query["key"] = self._key
-        try:
-            response = self._session.get(BASE_URL + path, params=query, timeout=TIMEOUT_S)
-            response.raise_for_status()
-            data = response.json()
-        except requests.Timeout:
-            raise ApiError("AMAP_ERROR", "高德接口请求超时（10 秒）", "请稍后重试或检查网络")
-        except requests.RequestException as exc:
-            raise ApiError(
-                "AMAP_ERROR",
-                f"高德接口请求失败：{redact(exc, self._key)}",
-                "请检查网络连通性",
-            )
-        except ValueError:
-            raise ApiError("AMAP_ERROR", "高德接口返回了无法解析的数据", "")
-        if not isinstance(data, dict):
-            raise ApiError("AMAP_ERROR", "高德接口返回结构异常", "")
-        if str(data.get("status")) != "1":
-            info = as_text(data.get("info")) or "未知错误"
+        last_data: dict[str, Any] | None = None
+        for attempt in range(len(_RETRY_DELAYS) + 1):
+            try:
+                response = self._session.get(BASE_URL + path, params=query, timeout=TIMEOUT_S)
+                response.raise_for_status()
+                data = response.json()
+            except requests.Timeout:
+                raise ApiError("AMAP_ERROR", "高德接口请求超时（10 秒）", "请稍后重试或检查网络")
+            except requests.RequestException as exc:
+                raise ApiError(
+                    "AMAP_ERROR",
+                    f"高德接口请求失败：{redact(exc, self._key)}",
+                    "请检查网络连通性",
+                )
+            except ValueError:
+                raise ApiError("AMAP_ERROR", "高德接口返回了无法解析的数据", "")
+            if not isinstance(data, dict):
+                raise ApiError("AMAP_ERROR", "高德接口返回结构异常", "")
+            if str(data.get("status")) == "1":
+                return data
+            last_data = data
             infocode = as_text(data.get("infocode"))
-            hint = ""
-            key_problem = infocode in _KEY_INFOCODES or "KEY" in info.upper()
-            if infocode in _KEY_INFOCODES:
-                hint = f"{_KEY_INFOCODES[infocode]}；{_KEY_HINT}"
-            elif key_problem:
-                hint = _KEY_HINT
+            if infocode in _RETRY_INFOCODES and attempt < len(_RETRY_DELAYS):
+                time.sleep(_RETRY_DELAYS[attempt])
+                continue
+            break
+        if last_data is None:
+            raise ApiError("AMAP_ERROR", "高德接口返回结构异常", "")
+        info = as_text(last_data.get("info")) or "未知错误"
+        infocode = as_text(last_data.get("infocode"))
+        hint = ""
+        key_problem = infocode in _KEY_INFOCODES or "KEY" in info.upper()
+        if infocode in _KEY_INFOCODES:
+            hint = f"{_KEY_INFOCODES[infocode]}；{_KEY_HINT}"
+        elif infocode in _INFO_HINTS:
+            hint = _INFO_HINTS[infocode]
+        elif key_problem:
+            hint = _KEY_HINT
+        if infocode == "10021":
+            message = "高德接口请求过于频繁，请稍后重试"
+        elif infocode == "30007":
+            message = "高德未返回可用路线，请更换交通方式或地点后重试"
+        else:
             message = f"高德接口返回错误：{info}（infocode={infocode or '未知'}）"
-            if key_problem:
-                message += "——疑似高德 Key 配置问题"
-            raise ApiError("AMAP_ERROR", message, hint)
-        return data
+        if key_problem:
+            message += "——疑似高德 Key 配置问题"
+        raise ApiError("AMAP_ERROR", message, hint)
 
     # ---------------------------------------------------------------- 地理编码
     def geocode(self, address: str) -> dict[str, Any]:
@@ -289,19 +320,28 @@ def _stop_name(value: Any) -> str:
 
 
 def _transit_steps(transit: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    """把 segments 按顺序转成简化步骤与可读摘要（步行 / 公交线路 / 地铁 / 火车）。"""
+    """把 segments 按顺序转成简化步骤与可读摘要（步行 / 公交线路 / 地铁 / 火车）。
+
+    高德 v5 的同一个 segment 可能同时包含 ``walking`` 与 ``bus``（例如「步行到站 +
+    地铁乘车」），因此不能只取其中一个分支；耗时也常放在 ``cost.duration`` 中。
+    """
     segments = transit.get("segments")
     steps: list[dict[str, Any]] = []
     parts: list[str] = []
     if not isinstance(segments, list):
         return steps, ""
+
+    def _duration(obj: dict[str, Any]) -> int:
+        cost = obj.get("cost") if isinstance(obj.get("cost"), dict) else {}
+        return max(0, as_int(obj.get("duration")) or as_int(cost.get("duration")))
+
     for segment in segments:
         if not isinstance(segment, dict):
             continue
         walking = segment.get("walking")
         if isinstance(walking, dict):
             distance = max(0, as_int(walking.get("distance")))
-            duration = max(0, as_int(walking.get("duration")))
+            duration = _duration(walking)
             if distance or duration:
                 steps.append(
                     {
@@ -312,7 +352,6 @@ def _transit_steps(transit: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     }
                 )
                 parts.append(f"步行 {distance} 米")
-            continue
         bus = segment.get("bus")
         if isinstance(bus, dict):
             buslines = bus.get("buslines") if isinstance(bus.get("buslines"), list) else []
@@ -324,7 +363,7 @@ def _transit_steps(transit: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             departure = _stop_name(line.get("departure_stop"))
             arrival = _stop_name(line.get("arrival_stop"))
             distance = max(0, as_int(line.get("distance")) or as_int(bus.get("distance")))
-            duration = max(0, as_int(line.get("duration")) or as_int(bus.get("duration")))
+            duration = _duration(line) or max(0, as_int(bus.get("duration")))
             text = name
             if departure and arrival:
                 text = f"{name}（{departure} → {arrival}）"
@@ -337,14 +376,13 @@ def _transit_steps(transit: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 }
             )
             parts.append(text)
-            continue
         railway = segment.get("railway")
         if isinstance(railway, dict):
             name = as_text(railway.get("name")) or "火车"
             departure = _stop_name(railway.get("departure_stop"))
             arrival = _stop_name(railway.get("arrival_stop"))
             distance = max(0, as_int(railway.get("distance")))
-            duration = max(0, as_int(railway.get("time")) or as_int(railway.get("duration")))
+            duration = max(0, as_int(railway.get("time")) or _duration(railway))
             text = name
             if departure and arrival:
                 text = f"{name}（{departure} → {arrival}）"
@@ -357,11 +395,10 @@ def _transit_steps(transit: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 }
             )
             parts.append(text)
-            continue
         taxi = segment.get("taxi")
         if isinstance(taxi, dict):
             distance = max(0, as_int(taxi.get("distance")))
-            duration = max(0, as_int(taxi.get("duration")))
+            duration = _duration(taxi)
             steps.append(
                 {
                     "type": "taxi",
