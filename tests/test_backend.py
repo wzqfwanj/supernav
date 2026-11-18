@@ -949,3 +949,343 @@ class TestAmapErrorHandling:
             client.bicycling("116.378,39.865", "116.397,39.918")
         assert "未返回可用路线" in exc.value.message
         assert "可换一种方式" in exc.value.hint
+
+
+# ============================================================ /api/compare（契约 3.4）
+#: 步行：含 instruction / road_name / distance / cost.duration / step_distance / 嵌套 polyline
+WALKING_STEPS_PAYLOAD = {
+    "status": "1",
+    "route": {
+        "paths": [
+            {
+                "distance": "1500",
+                "duration": "1080",
+                "steps": [
+                    {
+                        "instruction": "向西步行 100 米",
+                        "road_name": "南站路",
+                        "distance": "100",
+                        "duration": "72",
+                        "polyline": {"polyline": "116.378,39.865;116.379,39.865"},
+                    },
+                    {
+                        "instruction": "沿长安街步行",
+                        "road_name": "长安街",
+                        "step_distance": "1400",
+                        "cost": {"duration": "1008"},
+                        "polyline": [{"polyline": "116.379,39.865;116.397,39.918"}],
+                    },
+                ],
+            }
+        ]
+    },
+}
+
+BICYCLING_STEPS_PAYLOAD = {
+    "status": "1",
+    "route": {
+        "paths": [
+            {
+                "distance": "1600",
+                "duration": "480",
+                "steps": [
+                    {
+                        "instruction": "沿南二环骑行",
+                        "road_name": "南二环",
+                        "distance": 1600,
+                        "duration": 480,
+                        "polyline": "116.378,39.865;116.397,39.918",
+                    }
+                ],
+            }
+        ]
+    },
+}
+
+DRIVING_STEPS_PAYLOAD = {
+    "status": "1",
+    "route": {
+        "taxi_cost": "38",
+        "paths": [
+            {
+                "distance": "9000",
+                "duration": "1200",
+                "cost": {"duration": "1200", "tolls": "5"},
+                "steps": [
+                    {
+                        "instruction": "沿南二环行驶",
+                        "road_name": "南二环",
+                        "distance": 3000,
+                        "duration": 400,
+                        "polyline": "116.378,39.865;116.39,39.87",
+                    },
+                    {
+                        "instruction": "进入长安街",
+                        "road_name": "长安街",
+                        "step_distance": "6000",
+                        "cost": {"duration": "800"},
+                        "polyline": {"polyline": "116.39,39.87;116.397,39.918"},
+                    },
+                ],
+            }
+        ],
+    },
+}
+
+COMPARE_ROUTES = {
+    "/v3/geocode/geo": lambda params: GEOCODE_BY_ADDRESS[params["address"]],
+    "/v5/direction/walking": WALKING_STEPS_PAYLOAD,
+    "/v5/direction/bicycling": BICYCLING_STEPS_PAYLOAD,
+    "/v5/direction/driving": DRIVING_STEPS_PAYLOAD,
+    "/v5/direction/transit/integrated": TRANSIT_PAYLOAD,
+}
+ZERO_TOTALS = {"distance_m": 0, "duration_s": 0, "cost": {"total": 0.0, "breakdown": []}}
+
+
+def assert_mode_entry_shape(item: dict) -> None:
+    """校验 compare.modes[] 单项结构（契约 3.4）。"""
+    assert set(item) == {"mode", "mode_label", "available", "error", "legs", "totals", "summary"}
+    assert item["mode"] in config.VALID_MODES
+    assert item["mode_label"] == config.MODE_LABELS[item["mode"]]
+    assert isinstance(item["summary"], str)
+    if item["available"]:
+        assert item["error"] is None
+        assert isinstance(item["legs"], list)
+        assert set(item["totals"]) == {"distance_m", "duration_s", "cost"}
+    else:
+        assert set(item["error"]) == {"code", "message", "hint"}
+        assert item["error"]["code"] and item["error"]["message"]
+        assert item["legs"] == []
+        assert item["totals"] == ZERO_TOTALS
+
+
+class TestCompareDemo:
+    def test_compare_returns_five_modes(self):
+        payload = {
+            "points": [{"address": "北京南站"}, {"address": "故宫博物院"}, {"address": "北京西站"}],
+        }
+        status, data = get_json("POST", "/api/compare", payload)
+        assert status == 200
+        assert set(data) == {"mode", "generated_at", "points", "modes"}
+        assert data["mode"] == "demo"
+        assert len(data["points"]) == 3
+        assert [item["mode"] for item in data["modes"]] == list(config.VALID_MODES)
+
+        for item in data["modes"]:
+            assert_mode_entry_shape(item)
+            assert item["available"] is True
+            assert len(item["legs"]) == 2
+            assert all(leg["mode"] == item["mode"] for leg in item["legs"])
+            assert item["totals"]["distance_m"] == sum(leg["distance_m"] for leg in item["legs"])
+            assert item["totals"]["duration_s"] == sum(leg["duration_s"] for leg in item["legs"])
+            assert cents(item["totals"]["cost"]["total"]) == cents(
+                sum(leg["cost"]["total"] for leg in item["legs"])
+            )
+            assert_cost_consistent(item["totals"]["cost"])
+            for leg in item["legs"]:
+                assert_cost_consistent(leg["cost"])
+                assert len(leg["polyline"]) <= 500
+                assert isinstance(leg["steps"], list)
+
+        by_mode = {item["mode"]: item for item in data["modes"]}
+        assert by_mode["walking"]["totals"]["cost"]["total"] == 0.0
+        assert by_mode["bicycling"]["totals"]["cost"]["total"] == 0.0
+        for mode in ("transit", "taxi", "driving"):
+            assert by_mode[mode]["totals"]["cost"]["total"] > 0
+        assert by_mode["transit"]["summary"]
+        generated_at = datetime.fromisoformat(data["generated_at"])
+        assert generated_at.tzinfo is not None
+
+    @pytest.mark.parametrize("mode", ["walking", "bicycling", "transit", "taxi", "driving"])
+    def test_compare_single_leg_each_mode(self, mode):
+        payload = {"points": [{"address": "北京南站"}, {"address": "国贸"}]}
+        status, data = get_json("POST", "/api/compare", payload)
+        assert status == 200
+        item = next(entry for entry in data["modes"] if entry["mode"] == mode)
+        assert_mode_entry_shape(item)
+        assert item["available"] is True
+        assert len(item["legs"]) == 1
+        leg = item["legs"][0]
+        assert leg["mode"] == mode
+        assert item["totals"]["distance_m"] == leg["distance_m"]
+        assert item["totals"]["duration_s"] == leg["duration_s"]
+        assert item["totals"]["cost"] == leg["cost"]
+
+    def test_compare_demo_supports_max_points(self):
+        points = [{"address": name} for name in list(demo.DEMO_PLACES)[:10]]
+        status, data = get_json("POST", "/api/compare", {"points": points})
+        assert status == 200
+        for item in data["modes"]:
+            assert item["available"] is True
+            assert len(item["legs"]) == 9
+
+    def test_compare_ignores_modes_field(self):
+        payload = {
+            "points": [{"address": "天安门"}, {"address": "王府井"}],
+            "modes": ["flying"],
+            "unknown_field": 1,
+        }
+        status, data = get_json("POST", "/api/compare", payload)
+        assert status == 200
+        assert len(data["modes"]) == 5
+
+    def test_compare_validation(self):
+        status, data = get_json("POST", "/api/compare", {"points": [{"address": "北京南站"}]})
+        assert status == 400
+        assert data["error"]["code"] == "INVALID_INPUT"
+        assert "至少需要起点和终点" in data["error"]["message"]
+
+        too_many = {"points": [{"address": f"点{i}"} for i in range(11)]}
+        status, data = get_json("POST", "/api/compare", too_many)
+        assert status == 400
+        assert data["error"]["code"] == "INVALID_INPUT"
+
+
+class TestCompareLive:
+    def _install(self, monkeypatch):
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_COMPARE")
+        return install_amap(monkeypatch, COMPARE_ROUTES)
+
+    def test_compare_geocodes_once_shared_by_all_modes(self, monkeypatch):
+        log = self._install(monkeypatch)
+        payload = {
+            "points": [
+                {"address": "北京南站"},
+                {"address": "故宫博物院"},
+                {"address": "北京南站"},
+            ]
+        }
+        status, data = get_json("POST", "/api/compare", payload)
+        assert status == 200
+        assert data["mode"] == "live"
+        geocode_calls = [item for item in log if item["url"].endswith("/v3/geocode/geo")]
+        assert len(geocode_calls) == 2  # 3 个点只有 2 个不同地址，5 种方式共享
+        assert all(item["timeout"] == amap.TIMEOUT_S for item in log)
+        for item in data["modes"]:
+            assert item["available"] is True
+            assert len(item["legs"]) == 2
+        # 3 点 → 每方式 2 段：walking/bicycling/transit 各 2 次 + driving 端点 4 次（taxi+driving）
+        driving_calls = [item for item in log if item["url"].endswith("/v5/direction/driving")]
+        assert len(driving_calls) == 4
+
+    def test_compare_live_steps_and_summary(self, monkeypatch):
+        self._install(monkeypatch)
+        payload = {"points": [{"address": "北京南站"}, {"address": "故宫博物院"}]}
+        status, data = get_json("POST", "/api/compare", payload)
+        assert status == 200
+        by_mode = {item["mode"]: item for item in data["modes"]}
+
+        walking = by_mode["walking"]["legs"][0]
+        assert [step["type"] for step in walking["steps"]] == ["walking", "walking"]
+        assert len(walking["steps"]) <= 10
+        first, second = walking["steps"]
+        assert first["text"] == "向西步行 100 米"
+        assert first["distance_m"] == 100
+        assert first["duration_s"] == 72
+        assert second["distance_m"] == 1400  # step_distance 容错
+        assert second["duration_s"] == 1008  # cost.duration 容错
+        assert "南站路" in walking["summary"] and "长安街" in walking["summary"]
+        assert walking["polyline"]  # 嵌套 polyline 也要解析出来
+
+        bicycling = by_mode["bicycling"]["legs"][0]
+        assert [step["type"] for step in bicycling["steps"]] == ["bicycling"]
+        assert bicycling["summary"] == "南二环"
+
+        taxi = by_mode["taxi"]["legs"][0]
+        assert [step["type"] for step in taxi["steps"]] == ["taxi", "taxi"]
+        assert "长安街" in taxi["summary"]
+        assert taxi["cost"]["breakdown"][0]["key"] == "taxi_fare"
+
+        driving = by_mode["driving"]["legs"][0]
+        assert [step["type"] for step in driving["steps"]] == ["driving", "driving"]
+        assert "南二环" in driving["summary"]
+
+        # 公交仍为乘车步骤（walking/subway 顺序），不受简单路线 steps 改动影响
+        transit_steps = by_mode["transit"]["legs"][0]["steps"]
+        assert [step["type"] for step in transit_steps][:2] == ["walking", "subway"]
+
+    def test_plan_also_gets_simple_route_steps(self, monkeypatch):
+        """步骤增强同样作用于 /api/plan（结构不变，steps 更丰富）。"""
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_PLAN_STEPS")
+        install_amap(
+            monkeypatch,
+            {
+                "/v3/geocode/geo": lambda params: GEOCODE_BY_ADDRESS[params["address"]],
+                "/v5/direction/walking": WALKING_STEPS_PAYLOAD,
+            },
+        )
+        status, data = get_json(
+            "POST",
+            "/api/plan",
+            {"points": [{"address": "北京南站"}, {"address": "故宫博物院"}], "modes": ["walking"]},
+        )
+        assert status == 200
+        leg = data["legs"][0]
+        assert set(data) == {"mode", "generated_at", "points", "legs", "totals"}
+        assert [step["type"] for step in leg["steps"]] == ["walking", "walking"]
+        assert "南站路" in leg["summary"]
+
+    @pytest.mark.parametrize(
+        "bad_mode,bad_path",
+        [
+            ("transit", "/v5/direction/transit/integrated"),
+            ("bicycling", "/v5/direction/bicycling"),
+        ],
+    )
+    def test_compare_isolates_single_mode_failure(self, monkeypatch, bad_mode, bad_path):
+        routes = dict(COMPARE_ROUTES)
+        routes[bad_path] = {
+            "status": "0",
+            "info": "RESULTS_ARE_EMPTY",
+            "infocode": "30007",
+        }
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_COMPARE_FAIL")
+        install_amap(monkeypatch, routes)
+        payload = {"points": [{"address": "北京南站"}, {"address": "故宫博物院"}]}
+        status, data = get_json("POST", "/api/compare", payload)
+        assert status == 200
+        by_mode = {item["mode"]: item for item in data["modes"]}
+        bad = by_mode[bad_mode]
+        assert bad["available"] is False
+        assert bad["error"]["code"] == "AMAP_ERROR"
+        assert "未返回可用路线" in bad["error"]["message"]
+        assert bad["error"]["hint"]
+        assert bad["legs"] == []
+        assert bad["totals"] == ZERO_TOTALS
+        for mode in config.VALID_MODES:
+            if mode == bad_mode:
+                continue
+            assert by_mode[mode]["available"] is True, mode
+            assert by_mode[mode]["legs"], mode
+
+    def test_compare_isolates_unexpected_exception(self, monkeypatch):
+        """非 ApiError 的意外异常也只影响该方式，整体仍 200。"""
+        real_build_legs = planner._build_legs
+
+        def flaky_build_legs(modes, points, options, source, client=None):
+            if modes and modes[0] == "walking":
+                raise RuntimeError("boom")
+            return real_build_legs(modes, points, options, source, client)
+
+        monkeypatch.setattr(planner, "_build_legs", flaky_build_legs)
+        status, data = get_json(
+            "POST", "/api/compare", {"points": [{"address": "北京南站"}, {"address": "故宫博物院"}]}
+        )
+        assert status == 200
+        by_mode = {item["mode"]: item for item in data["modes"]}
+        assert by_mode["walking"]["available"] is False
+        assert by_mode["walking"]["error"]["code"] == "INTERNAL_ERROR"
+        assert by_mode["walking"]["legs"] == []
+        assert by_mode["walking"]["totals"] == ZERO_TOTALS
+        assert by_mode["driving"]["available"] is True
+
+    def test_compare_geocode_failure_is_4xx(self, monkeypatch):
+        monkeypatch.setenv("AMAP_KEY", "TEST_KEY_COMPARE_GEOFAIL")
+        install_amap(monkeypatch, {"/v3/geocode/geo": {"status": "1", "geocodes": []}})
+        status, data = get_json(
+            "POST", "/api/compare", {"points": [{"address": "北京南站"}, {"address": "故宫博物院"}]}
+        )
+        assert status == 422
+        assert data["error"]["code"] == "GEOCODE_FAILED"
+        assert "无法解析地址" in data["error"]["message"]
+
