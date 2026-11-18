@@ -8,8 +8,9 @@
    再和接口返回的金额逐项比对（driving 油费/过路费、taxi 估算、transit 票价阶梯、合计）。
 3. 自带断言与退出码：全部 PASS 退出码 0；任一 FAIL 退出码 1；结果落盘到
    ``verify/artifacts/smoke-run.json`` 供写报告引用。
-4. 覆盖：契约字段、参数校验、10 点上限、直接经纬度、费用公式、安全（Key 不泄漏 /
-   .gitignore）、前端静态资源、前端关键逻辑代码审查、``node --check``、后端 pytest。
+4. 覆盖：契约字段、参数校验、10 点上限、直接经纬度、费用公式、``/api/compare`` 5 方式对比、
+   单方式失败隔离（代码审查 + mock 单测）、安全（Key 不泄漏 / .gitignore）、前端静态资源、
+   前端关键逻辑代码审查（含对比/组合模式）、``node --check``、后端 pytest。
 
 用法
 ----
@@ -79,6 +80,9 @@ MONEY_TOL = 0.011  # 1 分钱容差（金额四舍五入到 0.01）
 
 # 内置示例地点（演示模式覆盖，docs/API-CONTRACT.md 第 6 节）
 PLACES = ["北京南站", "故宫博物院", "北京西站", "国贸", "中关村", "天安门", "王府井", "三里屯", "首都机场", "北京大学"]
+
+# 当前契约实现版本（backend/__init__.py 的 __version__；/api/compare 从 0.1.1 起提供，当前 0.2.0）
+EXPECTED_VERSION = "0.2.0"
 
 
 # --------------------------------------------------------------------------- 小工具
@@ -631,6 +635,16 @@ class Suite:
             headers={"Accept": "application/json"},
         )
 
+    def post_compare(self, name: str, payload):
+        return self.ck.http(
+            self.session,
+            name,
+            "POST",
+            self.url("/api/compare"),
+            json=payload,
+            headers={"Accept": "application/json"},
+        )
+
     # -- 1. 探活 / 状态 ------------------------------------------------------
     def check_health_and_status(self) -> dict:
         print("\n== 1. GET /api/healthz, GET /api/status ==")
@@ -645,7 +659,7 @@ class Suite:
             return {}
         self.samples["status"] = data
         self.ck.eq("status.ok", data.get("ok"), True)
-        self.ck.eq("status.version", data.get("version"), "0.1.0")
+        self.ck.eq("status.version", data.get("version"), EXPECTED_VERSION)
         self.ck.check("status.demo_bool", isinstance(data.get("demo"), bool), f"demo={data.get('demo')!r}")
         self.ck.check("status.demo_true", data.get("demo") is True, "无 Key 环境下应进入演示模式（demo=true）")
         self.ck.check(
@@ -840,6 +854,236 @@ class Suite:
         )
         self.ck.eq("plan.options.transit_strategy8.status_code", status_code, 200)
 
+    # -- 4b. /api/compare（契约 3.4：5 种交通方式对比）-----------------------
+    def check_compare_entry(self, prefix: str, entry, position: int, options: dict, expected_legs: int) -> None:
+        if not isinstance(entry, dict):
+            self.ck.check(f"{prefix}.object", False, f"entry 不是对象：{entry!r}")
+            return
+        expected_mode = MODES[position]
+        self.ck.eq(f"{prefix}.keys", set(entry.keys()), {"mode", "mode_label", "available", "error", "legs", "totals", "summary"})
+        self.ck.eq(f"{prefix}.mode", entry.get("mode"), expected_mode)
+        self.ck.eq(f"{prefix}.mode_label", entry.get("mode_label"), MODE_LABELS[expected_mode])
+        self.ck.eq(f"{prefix}.available", entry.get("available"), True)
+        self.ck.eq(f"{prefix}.error", entry.get("error"), None)
+        self.ck.check(f"{prefix}.summary_str", isinstance(entry.get("summary"), str), f"summary={entry.get('summary')!r}")
+        legs = entry.get("legs")
+        actual_legs = len(legs) if isinstance(legs, list) else legs
+        self.ck.eq(f"{prefix}.legs_count", actual_legs, expected_legs)
+        if not isinstance(legs, list):
+            return
+        for index, leg in enumerate(legs):
+            self.ck.check_leg(f"{prefix}.leg{index}", leg, index, expected_mode, options, expected_legs + 1)
+        self.ck.check_totals(prefix, {"legs": legs, "totals": entry.get("totals")}, options)
+        # 全方式对比时，每段的 mode 必须都是该方式
+        if all(isinstance(leg, dict) for leg in legs):
+            self.ck.eq(f"{prefix}.leg_modes", [leg.get("mode") for leg in legs], [expected_mode] * len(legs))
+
+    def check_compare_response(self, prefix: str, data, expected_points: int, options: dict) -> None:
+        if not isinstance(data, dict):
+            self.ck.check(f"{prefix}.object", False, f"响应不是 JSON 对象：{data!r}")
+            return
+        self.ck.eq(f"{prefix}.keys", set(data.keys()), {"mode", "generated_at", "points", "modes"})
+        self.ck.check(f"{prefix}.mode_demo", data.get("mode") == "demo", f"mode={data.get('mode')!r}")
+        self.ck.check(f"{prefix}.generated_at", iso_with_tz(data.get("generated_at")), f"generated_at={data.get('generated_at')!r}")
+        self.ck.check_points(prefix, data.get("points"), expected_points)
+        entries = data.get("modes")
+        self.ck.check(f"{prefix}.modes_list", isinstance(entries, list), f"modes={entries if not isinstance(entries, list) else len(entries)}")
+        if not isinstance(entries, list):
+            return
+        self.ck.eq(f"{prefix}.modes_count", len(entries), 5)
+        self.ck.eq(f"{prefix}.modes_order", [item.get("mode") for item in entries if isinstance(item, dict)], MODES)
+        for position, entry in enumerate(entries):
+            self.check_compare_entry(f"{prefix}.entry{position}", entry, position, options, expected_points - 1)
+        # 费用语义交叉检查：步行/骑行免费；公交/打车/驾车在有距离时应 > 0
+        by_mode = {entry.get("mode"): entry for entry in entries if isinstance(entry, dict)}
+        for mode in ("walking", "bicycling"):
+            entry = by_mode.get(mode) or {}
+            cost = (entry.get("totals") or {}).get("cost") or {}
+            self.ck.check(f"{prefix}.{mode}_free", cost.get("total") == 0 and cost.get("breakdown") == [], f"cost={cost!r}")
+        if expected_points >= 2:
+            distances = {
+                mode: ((by_mode.get(mode) or {}).get("totals") or {}).get("distance_m") or 0
+                for mode in ("transit", "taxi", "driving")
+            }
+            if all(value > 0 for value in distances.values()):
+                for mode in ("transit", "taxi", "driving"):
+                    cost = ((by_mode.get(mode) or {}).get("totals") or {}).get("cost") or {}
+                    self.ck.check(f"{prefix}.{mode}_paid", is_number(cost.get("total")) and cost["total"] > 0, f"cost={cost!r}")
+
+    def check_compare(self) -> None:
+        print("\n== 4b. POST /api/compare（演示模式，2–5 点；契约 3.4）==")
+        options = dict(DEFAULTS)
+        cases = [
+            ("compare.2points", [PLACES[0], PLACES[1]], 1),
+            ("compare.3points", [PLACES[0], PLACES[1], PLACES[2]], 2),
+            ("compare.4points", [PLACES[0], PLACES[1], PLACES[2], PLACES[3]], 3),
+            ("compare.5points", [PLACES[0], PLACES[1], PLACES[2], PLACES[3], PLACES[4]], 4),
+            ("compare.10points", PLACES[:10], 9),  # 契约与 /api/plan 同为 2–10，覆盖上限
+        ]
+        for name, addresses, expected_legs in cases:
+            payload = {"points": [{"address": name} for name in addresses]}
+            status_code, text, data = self.post_compare(name, payload)
+            self.ck.eq(f"{name}.status_code", status_code, 200)
+            if status_code == 200:
+                self.check_compare_response(name, data, len(addresses), options)
+                self.ck.eq(f"{name}.legs_per_mode", [len(item.get("legs", [])) for item in data.get("modes", [])], [expected_legs] * 5)
+                if expected_legs == 2:
+                    self.samples["compare_3points"] = data
+            else:
+                self.ck.check(f"{name}.body", False, text[:500])
+
+        # options 生效（driving 油费/过路费复算在 check_leg 内完成）
+        custom = {"fuel_price": 8.5, "fuel_consumption": 6.7}
+        merged = dict(DEFAULTS)
+        merged.update(custom)
+        payload = {"points": [{"address": PLACES[0]}, {"address": PLACES[8]}], "options": custom}
+        status_code, text, data = self.post_compare("compare.options", payload)
+        self.ck.eq("compare.options.status_code", status_code, 200)
+        if status_code == 200:
+            self.check_compare_response("compare.options", data, 2, merged)
+            driving = next((item for item in data["modes"] if item.get("mode") == "driving"), {})
+            leg = (driving.get("legs") or [{}])[0]
+            fuel, toll = driving_expected(leg.get("distance_m") or 0, merged)
+            self.ck.check("compare.options.toll_triggered", toll > 0, f"km={(leg.get('distance_m') or 0) / 1000.0:.2f}")
+            self.samples["compare_options_driving"] = driving
+
+        # 支持 location 直接坐标（与 /api/plan 规则一致）
+        payload = {
+            "points": [
+                {"location": "116.378,39.865", "name": "起点坐标"},
+                {"location": "116.397,39.918"},
+            ],
+        }
+        status_code, text, data = self.post_compare("compare.location", payload)
+        self.ck.eq("compare.location.status_code", status_code, 200)
+        if status_code == 200:
+            self.check_compare_response("compare.location", data, 2, options)
+            self.ck.eq("compare.location.point0_name", data["points"][0].get("name"), "起点坐标")
+            self.ck.eq("compare.location.point1_lnglat", data["points"][1].get("location"), {"lng": 116.397, "lat": 39.918})
+            self.samples["compare_location"] = data
+
+        # compare 不需要 modes；传入 modes（甚至非法值）与额外字段应被忽略
+        payload = {"points": [{"address": PLACES[0]}, {"address": PLACES[1]}], "modes": ["flying"], "unknown_field": 1}
+        status_code, text, data = self.post_compare("compare.ignores_modes", payload)
+        self.ck.eq("compare.ignores_modes.status_code", status_code, 200)
+        if status_code == 200:
+            self.ck.eq("compare.ignores_modes.count", len(data.get("modes", [])), 5)
+
+    def check_compare_validation(self) -> None:
+        print("\n== 4c. /api/compare 参数校验（4xx、错误格式）==")
+        two = [{"address": "北京南站"}, {"address": "故宫博物院"}]
+        payloads = [
+            ("compare.validation.missing_body", {}),
+            ("compare.validation.one_point", {"points": [{"address": "只有起点"}]}),
+            ("compare.validation.eleven_points", {"points": [{"address": f"点{i}"} for i in range(11)]}),
+            ("compare.validation.points_not_list", {"points": "北京南站"}),
+            ("compare.validation.empty_address", {"points": [{"address": ""}, {"address": "B"}]}),
+            ("compare.validation.point_without_address", {"points": [{"name": "无地址"}, {"address": "B"}]}),
+            ("compare.validation.location_bad_format", {"points": [{"location": "abc"}, {"address": "B"}]}),
+            ("compare.validation.options_not_object", {"points": two, "options": "x"}),
+            ("compare.validation.transit_strategy_9", {"points": two, "options": {"transit_strategy": 9}}),
+            ("compare.validation.fuel_price_negative", {"points": two, "options": {"fuel_price": -1}}),
+        ]
+        samples = {}
+        for name, payload in payloads:
+            status_code, text, data = self.post_compare(name, payload)
+            ok = isinstance(status_code, int) and 400 <= status_code < 500
+            self.ck.check(f"{name}.4xx", ok, f"status={status_code} body={text[:300]!r}")
+            if not ok:
+                continue
+            error = data.get("error") if isinstance(data, dict) else None
+            self.ck.check(f"{name}.error_object", isinstance(error, dict), f"body={text[:300]!r}")
+            if isinstance(error, dict):
+                self.ck.check(
+                    f"{name}.error_code",
+                    isinstance(error.get("code"), str) and error["code"] in {"INVALID_INPUT", "GEOCODE_FAILED", "AMAP_ERROR", "KEY_MISSING", "INTERNAL_ERROR"},
+                    f"code={error.get('code')!r}",
+                )
+                self.ck.check(
+                    f"{name}.error_message_readable",
+                    isinstance(error.get("message"), str) and len(error["message"].strip()) >= 2 and "Traceback" not in error["message"],
+                    f"message={error.get('message')!r}",
+                )
+                self.ck.check(f"{name}.error_hint_str", isinstance(error.get("hint"), str), f"hint={error.get('hint')!r}")
+                if name in {"compare.validation.one_point", "compare.validation.eleven_points", "compare.validation.transit_strategy_9"}:
+                    samples[name] = {"status": status_code, "body": data}
+        self.samples["compare_validation"] = samples
+
+        status_code, text, data = self.ck.http(
+            self.session,
+            "compare.validation.malformed_json",
+            "POST",
+            self.url("/api/compare"),
+            data="{not-json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.ck.check("compare.validation.malformed_json.4xx", isinstance(status_code, int) and 400 <= status_code < 500, f"status={status_code} body={text[:300]!r}")
+        self.ck.check(
+            "compare.validation.malformed_json.error_object",
+            isinstance(data, dict) and isinstance(data.get("error"), dict) and isinstance(data["error"].get("message"), str) and data["error"]["message"],
+            f"body={text[:300]!r}",
+        )
+
+    def _run_pytest_selector(self, selector: str, name: str) -> str:
+        env = os.environ.copy()
+        env.pop("AMAP_KEY", None)
+        env.pop("DEMO_MODE", None)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "-k", selector],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            self.ck.check(f"{name}.exit_code", False, "pytest 超时（300s）")
+            return ""
+        output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        tail = output.splitlines()[-4:] if output else []
+        self.samples.setdefault("pytest_selectors", {})[selector] = tail
+        self.ck.check(f"{name}.exit_code", proc.returncode == 0, f"rc={proc.returncode} tail={tail}")
+        passed = re.search(r"(\d+) passed", output)
+        self.ck.check(f"{name}.passed_count", passed is not None and int(passed.group(1)) > 0, f"tail={tail}")
+        return output
+
+    def check_compare_failure_isolation(self) -> None:
+        print("\n== 4d. 单方式失败隔离（代码审查 + 定向 mock 单测）==")
+        planner_src = read_text(PROJECT_ROOT / "backend" / "planner.py")
+        compare_match = re.search(r"def compare\(.*?(?=\ndef |\Z)", planner_src, re.S)
+        body = compare_match.group(0) if compare_match else ""
+        unavailable_match = re.search(r"def _unavailable_mode\(.*?(?=\ndef |\Z)", planner_src, re.S)
+        unavailable_src = unavailable_match.group(0) if unavailable_match else ""
+        empty_match = re.search(r"def _empty_totals\(.*?(?=\ndef |\Z)", planner_src, re.S)
+        empty_src = empty_match.group(0) if empty_match else ""
+        self.ck.check("compare.code.parse_compare_fn", bool(body), "未找到 planner.compare 函数")
+        checks = [
+            ("loop_five_modes", "for mode in config.VALID_MODES" in body),
+            ("per_mode_try", "try:" in body and "_build_legs(" in body),
+            ("catch_api_error", "except ApiError" in body),
+            ("catch_unexpected", "except Exception" in body),
+            ("unavailable_helper", bool(unavailable_src)),
+            ("unavailable_available_false", '"available": False' in unavailable_src),
+            ("unavailable_legs_empty", '"legs": []' in unavailable_src),
+            ("unavailable_zero_totals", "_empty_totals()" in unavailable_src),
+            ("unavailable_error_shape", 'error.to_dict()["error"]' in unavailable_src),
+            ("zero_totals_shape", '"distance_m": 0' in empty_src and '"duration_s": 0' in empty_src and '"total": 0.0' in empty_src),
+            ("available_true_entry", '"available": True' in body and '"error": None' in body),
+            ("points_resolved_before_loop", body.find("resolve_points_") != -1 and body.find("resolve_points_") < body.find("for mode in config.VALID_MODES")),
+        ]
+        for label, ok in checks:
+            self.ck.check(f"compare.code.{label}", ok, label)
+        docs = read_text(PROJECT_ROOT / "docs" / "API-CONTRACT.md")
+        self.ck.check(
+            "compare.docs.isolation_rule",
+            "单一方式失败不影响整体" in docs and "available=false" in docs,
+            "契约 3.4 缺少失败隔离说明",
+        )
+        # 定向跑后端 mock 单测：单方式失败隔离 / 真实模式 compare
+        self._run_pytest_selector("compare_isolates", "compare.pytest.isolation")
+        self._run_pytest_selector("TestCompareLive", "compare.pytest.live")
+
     # -- 5. 安全（Key 不泄漏 / .gitignore）-----------------------------------
     def check_security(self) -> None:
         print("\n== 5. 安全：响应与前端静态文件不含 Key；.gitignore 覆盖 ==")
@@ -859,6 +1103,13 @@ class Suite:
         status_code, text, data = self.post_plan("security.plan", plan_payload(PLACES[:2], ["transit"]))
         self.ck.eq("security.plan.status_code", status_code, 200)
         texts["plan"] = text
+
+        status_code, text, data = self.post_compare(
+            "security.compare",
+            {"points": [{"address": PLACES[0]}, {"address": PLACES[1]}]},
+        )
+        self.ck.eq("security.compare.status_code", status_code, 200)
+        texts["compare"] = text
 
         # 响应/静态文件里不得出现「Key 值」或 Key 的请求形态。
         # 注意：demo_reason 按契约会写「未配置 AMAP_KEY」，那是环境变量名而非 Key 值，不能误报，
@@ -1011,11 +1262,54 @@ class Suite:
         present("errors.show_alert", "function showAlert" in app and "function clearAlert" in app)
         present("errors.extract_error", "function extractError" in app and "data.error.message" in app)
         present("errors.submit_failure", "catch (error)" in app and "showAlert(" in app)
-        present("errors.timeout", "AbortController" in app and "REQUEST_TIMEOUT_MS" in app)
-        present("api.status_fetch", "fetch('/api/status'" in app)
-        present("api.plan_fetch", "fetch('/api/plan'" in app and "method: 'POST'" in app)
+        present("errors.timeout", "AbortController" in app and "PLAN_TIMEOUT_MS" in app and "COMPARE_TIMEOUT_MS" in app)
+        present("api.status_fetch", re.search(r"fetch\(\s*['\"]/?api/status", app) is not None)
+        present("api.plan_fetch", "requestEndpoint('api/plan'" in app and "method: 'POST'" in app)
+        present("api.compare_fetch", "requestEndpoint('api/compare'" in app)
         present("api.status_retry", "handleStatusRetry" in app and 'id="status-retry"' in index)
-        present("payload.address_shape", re.search(r"points:\s*state\.points\.map", app) is not None)
+        present("payload.address_shape", "function buildPointsPayload" in app and "points: buildPointsPayload()" in app)
+        compare_payload_match = re.search(r"function buildComparePayload\(.*?\n  \}", app, re.S)
+        compare_payload_src = compare_payload_match.group(0) if compare_payload_match else ""
+        present("payload.compare_no_modes", "function buildComparePayload" in app and "points:" in compare_payload_src and "modes:" not in compare_payload_src, "对比请求不应携带 modes")
+
+        # ===== 方式对比（默认）与组合行程 =====
+        present("compare.default_plan_mode", re.search(r"planMode:\s*PLAN_MODE_COMPARE", app) is not None)
+        present("compare.mode_switch_dom", 'data-plan-mode="compare"' in index and 'data-plan-mode="combine"' in index)
+        present("compare.mode_switch_default", re.search(r'data-plan-mode="compare"[^>]*aria-pressed="true"', index) is not None)
+        present("compare.mode_switch_bind", "dom.planModeButtons.forEach" in app and "setPlanMode(" in app)
+        present("compare.combine_form_keeps_selects", "state.planMode === PLAN_MODE_COMBINE && index < state.points.length - 1" in app, "组合行程模式应保留每段方式下拉")
+        order_match = re.search(r"COMPARE_ORDER\s*=\s*\[(.*?)\]", app, re.S)
+        order_values = re.findall(r"'([a-z]+)'", order_match.group(1)) if order_match else []
+        present(
+            "compare.card_order",
+            order_values == ["transit", "driving", "taxi", "bicycling", "walking"],
+            f"卡片顺序应为 公交→驾车→打车→骑行→步行，实际 COMPARE_ORDER={order_values}",
+        )
+        present("compare.grid_dom", 'id="compare-section"' in index and 'id="compare-grid"' in index)
+        present("compare.card_dom", "function renderCompareCards" in app and "data-compare-mode" in app)
+        present("compare.card_metrics", "buildCompareMetric('耗时'" in app and "'里程'" in app and "'费用'" in app)
+        present("compare.click_switch", "selectCompareMode(" in app and "addEventListener('click'" in app)
+        present(
+            "compare.detail_reuse",
+            "function renderCompareDetail" in app
+            and "renderTotals(detailData" in app
+            and "renderLegs(detailData" in app
+            and "renderRoute(entry.legs" in app,
+            "详情应复用合计/逐段/路线渲染",
+        )
+        present("compare.initial_selection", "pickInitialCompareMode" in app)
+        present("compare.unavailable_card", "is-unavailable" in app and "无可用路线" in app)
+        present("compare.unavailable_detail", "function showModeError" in app and "dom.detail.hidden = true" in app and 'id="mode-error"' in index)
+        present("compare.combine_mode_kept", "function renderPlanResult" in app and "function buildPlanPayload" in app and "requestEndpoint('api/plan'" in app)
+        present("compare.mode_switch_rerender", "function setPlanMode" in app and "renderForm()" in app)
+        present(
+            "compare.no_innerhtml",
+            not re.search(r"\.innerHTML\s*=", app)
+            and "insertAdjacentHTML" not in app
+            and "document.write" not in app
+            and "eval(" not in app,
+            "前端不应使用 innerHTML/eval 等不安全 DOM 写法",
+        )
 
         # 无外部 CDN / 无外链资源
         external_refs = re.findall(r'(?:src|href)\s*=\s*["\'](https?://[^"\']+)', index)
@@ -1142,6 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
             suite.check_validation_errors()
             suite.check_location_and_limits()
             suite.check_options()
+            suite.check_compare()
         else:
             ck.check(
                 "environment.demo_mode",
@@ -1151,6 +1446,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             # 参数校验不依赖数据源，仍可验证；成功路径会联网，跳过
             suite.check_validation_errors()
+        # compare 的参数校验 / 失败隔离代码审查 / 定向 mock 单测不依赖演示数据，始终执行
+        suite.check_compare_validation()
+        suite.check_compare_failure_isolation()
 
         suite.check_security()
         suite.check_static()
