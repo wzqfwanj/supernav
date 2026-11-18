@@ -13,8 +13,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__, config, planner
+from . import __version__, amap, config, planner
 from .errors import ApiError
+from .util import format_location, parse_location_text
 
 
 class PlanRequest(BaseModel):
@@ -122,6 +123,40 @@ def create_app() -> FastAPI:
             "demo_reason": reason,
             "defaults": dict(config.DEFAULTS),
             "modes": [dict(mode) for mode in config.MODES],
+        }
+
+    @app.get("/api/regeo")
+    def regeo_endpoint(location: str = "") -> dict:
+        """浏览器定位坐标 → 详细地址（用于起点输入框回显与保存）。
+
+        演示模式返回坐标文本；真实模式调用高德逆地理编码。
+        """
+        parsed = parse_location_text(location)
+        if parsed is None:
+            raise ApiError(
+                "INVALID_INPUT",
+                "location 必须是合法的 \"lng,lat\" 经纬度",
+                '例如 /api/regeo?location=116.397,39.908',
+            )
+        lng, lat = round(parsed[0], 6), round(parsed[1], 6)
+        is_demo, _reason = config.demo_state()
+        point = {"lng": lng, "lat": lat}
+        if is_demo:
+            return {
+                "mode": "demo",
+                "formatted_address": f"当前位置（{lng:.6f}, {lat:.6f}）",
+                "city": "北京市",
+                "citycode": "010",
+                "location": point,
+            }
+        client = amap.AmapClient(config.get_amap_key())
+        geo = client.regeo(format_location(lng, lat))
+        return {
+            "mode": "live",
+            "formatted_address": geo.get("formatted_address") or f"当前位置（{lng:.6f}, {lat:.6f}）",
+            "city": geo.get("city") or "",
+            "citycode": geo.get("citycode") or "",
+            "location": point,
         }
 
     @app.post("/api/plan")

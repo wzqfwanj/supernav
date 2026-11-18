@@ -85,6 +85,21 @@ def main() -> int:
     r = s.get(f"{BASE_URL}/api/healthz", timeout=TIMEOUT)
     check("GET /api/healthz 200", r.status_code == 200 and r.json().get("status") == "ok")
 
+    # 2.5 逆地理编码（起点定位回显）
+    r = s.get(f"{BASE_URL}/api/regeo?location=116.397,39.908", timeout=TIMEOUT)
+    check("GET /api/regeo 200", r.status_code == 200, f"{r.status_code} {r.text[:160]}")
+    if r.status_code == 200:
+        geo = r.json()
+        check("regeo 返回详细地址", bool(str(geo.get("formatted_address") or "").strip()))
+        check("regeo 含 citycode", bool(geo.get("citycode")))
+        check(
+            "regeo location 回显",
+            abs(float(geo.get("location", {}).get("lng", 0)) - 116.397) < 1e-6
+            and abs(float(geo.get("location", {}).get("lat", 0)) - 39.908) < 1e-6,
+        )
+    r = s.get(f"{BASE_URL}/api/regeo?location=bad", timeout=TIMEOUT)
+    check("regeo 非法坐标返回 4xx", 400 <= r.status_code < 500, f"status={r.status_code}")
+
     defaults = status.get("defaults", {})
     fuel_price = float(defaults.get("fuel_price", 7.8))
     fuel_consumption = float(defaults.get("fuel_consumption", 8.0))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -37,15 +38,16 @@ def call_api(method: str, path: str, payload=None):
     if payload is not None:
         headers.append((b"content-type", b"application/json"))
         headers.append((b"content-length", str(len(body)).encode("ascii")))
+    parts = urlsplit(path)
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
         "http_version": "1.1",
         "method": method,
         "scheme": "http",
-        "path": path,
-        "raw_path": path.encode("utf-8"),
-        "query_string": b"",
+        "path": parts.path,
+        "raw_path": parts.path.encode("utf-8"),
+        "query_string": parts.query.encode("utf-8"),
         "headers": headers,
         "client": ("127.0.0.1", 12345),
         "server": ("testserver", 80),
@@ -1334,4 +1336,37 @@ class TestCompareLive:
         assert status == 422
         assert data["error"]["code"] == "GEOCODE_FAILED"
         assert "无法解析地址" in data["error"]["message"]
+
+
+class TestRegeoEndpoint:
+    def test_regeo_demo_returns_coordinates_text(self):
+        status, data = get_json("GET", "/api/regeo?location=116.397,39.908")
+        assert status == 200
+        assert data["mode"] == "demo"
+        assert data["citycode"] == "010"
+        assert "116.397000" in data["formatted_address"]
+        assert data["location"] == {"lng": 116.397, "lat": 39.908}
+
+    def test_regeo_invalid_location_is_400(self):
+        status, data = get_json("GET", "/api/regeo?location=not-a-point")
+        assert status == 400
+        assert data["error"]["code"] == "INVALID_INPUT"
+
+    def test_regeo_live_uses_amap_reverse_geocode(self, monkeypatch):
+        secret = "SECRET_KEY_REGEO_SHOULD_NOT_LEAK"
+        monkeypatch.setenv("AMAP_KEY", secret)
+        log = install_amap(monkeypatch, {"/v3/geocode/regeo": REGEO_PAYLOAD})
+        status, data = get_json("GET", "/api/regeo?location=116.397,39.908")
+        assert status == 200
+        assert data["mode"] == "live"
+        assert data["formatted_address"].startswith("北京市")
+        assert data["city"] == "北京市"
+        assert data["citycode"] == "010"
+        assert data["location"] == {"lng": 116.397, "lat": 39.908}
+        assert len(log) == 1
+        assert log[0]["url"].endswith("/v3/geocode/regeo")
+        assert log[0]["params"]["location"] == "116.397000,39.908000"
+        # Key 不应出现在响应中
+        _status, _headers, body = call_api("GET", "/api/regeo?location=116.397,39.908")
+        assert secret.encode() not in body
 

@@ -12,6 +12,7 @@
 (function () {
   // ===== 常量 =====
   const THEME_KEY = 'supernav-theme';
+  const SAVED_LOCATION_KEY = 'supernav-saved-location';
   const THEME_VALUES = ['light', 'gray', 'dark'];
   const MIN_POINTS = 2;
   const MAX_POINTS = 10;
@@ -172,6 +173,78 @@
       window.localStorage.setItem(key, value);
     } catch (error) {
       // 隐私模式 / localStorage 不可用：主题切换仍然生效，只是不持久化。
+    }
+  }
+
+  // ===== 上次定位：浏览器本地保存，刷新后自动恢复 =====
+  function saveSavedLocation(location) {
+    safeSetItem(SAVED_LOCATION_KEY, JSON.stringify(location));
+  }
+
+  function loadSavedLocation() {
+    const raw = safeGetItem(SAVED_LOCATION_KEY);
+    if (!raw) {
+      return null;
+    }
+    try {
+      const data = JSON.parse(raw);
+      const lng = parseNumber(data && data.lng);
+      const lat = parseNumber(data && data.lat);
+      if (lng === null || lat === null) {
+        return null;
+      }
+      if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+        return null;
+      }
+      return {
+        lng: lng,
+        lat: lat,
+        address: isNonEmptyString(data.address) ? data.address.trim() : '',
+        updatedAt: parseNumber(data.updatedAt) || 0
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function restoreSavedLocation() {
+    const saved = loadSavedLocation();
+    if (!saved) {
+      return;
+    }
+    state.pointLocations[0] = { lng: saved.lng, lat: saved.lat, address: saved.address };
+    state.points[0] =
+      saved.address ||
+      '当前位置（' + saved.lng.toFixed(6) + ', ' + saved.lat.toFixed(6) + '）';
+  }
+
+  function locateFallbackLabel(lng, lat) {
+    return '当前位置（' + lng.toFixed(6) + ', ' + lat.toFixed(6) + '）';
+  }
+
+  async function fetchRegeoAddress(lng, lat) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller
+      ? window.setTimeout(function () {
+          controller.abort();
+        }, 10000)
+      : null;
+    try {
+      const response = await fetch(
+        'api/regeo?location=' + encodeURIComponent(lng.toFixed(6) + ',' + lat.toFixed(6)),
+        { headers: { Accept: 'application/json' }, signal: controller ? controller.signal : undefined }
+      );
+      if (!response.ok) {
+        return '';
+      }
+      const data = await response.json();
+      return isNonEmptyString(data.formatted_address) ? data.formatted_address.trim() : '';
+    } catch (error) {
+      return '';
+    } finally {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     }
   }
 
@@ -472,7 +545,9 @@
     input.setAttribute('spellcheck', 'false');
     if (located) {
       input.classList.add('is-located');
-      input.title = '已使用浏览器定位：' + located.lng.toFixed(6) + ',' + located.lat.toFixed(6);
+      input.title =
+        '已定位并保存：' +
+        (located.address || located.lng.toFixed(6) + ',' + located.lat.toFixed(6));
     }
     if (pointKind(index) === 'start') {
       input.setAttribute('placeholder', '起点地址，例如：北京南站（也可点「定位」）');
@@ -711,13 +786,31 @@
             showAlert({ message: '定位结果无效。', hint: '请重试或直接输入起点地址。' });
             return;
           }
-          state.pointLocations[index] = {
+          const located = {
             lng: Number(lng.toFixed(6)),
-            lat: Number(lat.toFixed(6))
+            lat: Number(lat.toFixed(6)),
+            address: ''
           };
-          state.points[index] = '我的位置';
-          renderForm();
-          focusPointInput(index);
+          state.pointLocations[index] = located;
+          // 保持「定位中…」，等逆地理编码拿到详细地址后再回显并保存
+          fetchRegeoAddress(located.lng, located.lat).then(function (address) {
+            // 用户可能在等待期间手动修改了起点，此时不要覆盖
+            if (state.pointLocations[index] !== located) {
+              return;
+            }
+            const detail = address || locateFallbackLabel(located.lng, located.lat);
+            located.address = detail;
+            state.points[index] = detail;
+            saveSavedLocation({
+              lng: located.lng,
+              lat: located.lat,
+              address: detail,
+              updatedAt: Date.now()
+            });
+            setLocateButtonBusy(index, false);
+            renderForm();
+            focusPointInput(index);
+          });
         },
         function (error) {
           finish();
@@ -2072,6 +2165,7 @@
     updatePlanModeUI();
     renderExamples();
     applyDefaults();
+    restoreSavedLocation();
     renderForm();
     bindEvents();
     setLoading(false);
