@@ -1,0 +1,24 @@
+# SuperNav 交通规划 — Caddy 子路径反代片段
+#
+# 目标：https://wkeeli.cn/supernav/ 公开访问（无 basic_auth）
+# 上游：dev 主机 180.76.180.249:8091（uvicorn，应用内部仍是 /api/* 与 / 路径）
+#
+# 插入位置：阿里云 8.133.209.25 的 /etc/caddy/Caddyfile 中，
+# 放在 wkeeli.cn { ... } 块内的兜底 `reverse_proxy localhost:5000` 之前。
+#   /supernav  -> /supernav/ 308
+#   /supernav/* 去掉前缀后转发到上游（handle_path），前端用相对路径 api/status、api/plan 与相对静态资源，因此子路径可用。
+#
+# 改完执行：
+#   caddy validate --config /etc/caddy/Caddyfile
+#   systemctl reload caddy
+# 验证：
+#   curl -sI https://wkeeli.cn/supernav/
+#   curl -s https://wkeeli.cn/supernav/api/status
+
+# ===== SuperNav 交通规划（dev 180.76.180.249:8091，公开子路径 /supernav/） =====
+redir /supernav /supernav/ 308
+handle_path /supernav/* {
+	reverse_proxy http://180.76.180.249:8091 {
+		header_up X-Forwarded-Prefix /supernav
+	}
+}

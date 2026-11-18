@@ -2,6 +2,9 @@
 
 一个极简的多段交通规划小应用：输入起点、途经点、终点，为每段选择交通方式，自动规划路线并计算**路费**（公交票价 / 打车费 / 过路费 / 油费），给出逐段明细与全程合计。
 
+> 在线体验：**https://wkeeli.cn/supernav/**（公开、无密码；当前为演示模式）
+> 源码：https://github.com/wzqfwanj/supernav
+
 > 当前版本：MVP v0.1（仅实现「交通规划」这一最小功能）。
 
 ## 功能
@@ -40,6 +43,12 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 
 未配置高德 Key 时即可体验：页面会显示「演示模式」，使用模拟路线与费用。
 
+## 在线地址与部署
+
+- 线上地址：https://wkeeli.cn/supernav/ （公开，无访问密码）
+- 部署拓扑：dev 主机 systemd 运行 `supernav.service`（端口 8091），阿里云 Caddy 自动 HTTPS，按子路径 `/supernav/*` 反代。
+- 部署/更新步骤见 [deploy/README.md](deploy/README.md)，systemd 单元与 Caddy 片段见 [deploy/](deploy/)。
+
 ## 配置高德 Key（切换真实数据）
 
 1. 到 [高德开放平台控制台](https://console.amap.com/dev/key/app) 创建应用，添加 **Web 服务** 类型的 Key。
@@ -76,6 +85,7 @@ docs/             接口契约、界面截图
 tests/            后端单元测试
 verify/           独立验证脚本与报告（非业务代码）
 scripts/          Lead 验收脚本（acceptance.py）
+deploy/           systemd 单元、Caddy 子路径反代片段与部署说明
 run.ps1           本地启动脚本
 config.local.example.json  本地 Key 配置示例
 ```
@@ -98,14 +108,15 @@ python verify/smoke.py
 ## 当前状态
 
 - 演示模式后端单测、黑盒验收、独立验证已通过；页面已用 headless Chrome 实际渲染截图确认（明/暗主题）。
-- **真实高德数据尚未联调**：当前环境没有高德 Key。按上文配置 Key 后重启服务即可切换真实路线；如真实 v5 响应字段与文档有出入，可能需要小幅调整解析（已做多层容错）。
-- 在线部署、GitHub 发布按开发规则**待确认后**再执行。
+- 已在线部署：https://wkeeli.cn/supernav/ （子路径反代，无访问密码，公开访问）。
+- 已开源：https://github.com/wzqfwanj/supernav （公开仓库）。
+- **真实高德数据尚未联调**：当前没有配置高德 Key，线上为演示模式。按上文配置 Key 后重启服务即可切换真实路线；如真实 v5 响应字段与文档有出入，可能需要小幅调整解析（已做多层容错）。
 
-## 后续（按开发规则，须先与用户确认）
+## 后续（可选迭代）
 
-- 在线部署（是否加访问账号密码）——待确认，尚未执行。
-- 上传 GitHub 并发布（是否开源）——待确认，尚未执行。
-- 真机/真实 Key 联调、更多规划能力（多方案对比、地图底图、高德 MCP 专属地图等）——后续迭代。
+- 真实高德 Key 联调（公交票价 / 打车费 / 过路费的真实数据）。
+- 更多规划能力：多方案对比（最快/最省）、地图底图、高德 MCP「专属地图/打车唤端」等。
+- 线上更新：按 [deploy/README.md](deploy/README.md) 重新打包、部署并 `systemctl restart supernav`。
 
 ## 技术说明
 

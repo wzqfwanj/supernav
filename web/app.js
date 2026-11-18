@@ -645,7 +645,7 @@
   function showStatusNotice() {
     dom.statusNotice.hidden = false;
     dom.statusNoticeText.textContent =
-      '无法连接后端服务（/api/status）。请先在项目根目录启动后端：python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000，然后点击「重试连接」。';
+      '无法连接后端服务（api/status）。请先在项目根目录启动后端：python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000，然后点击「重试连接」。';
   }
 
   function hideStatusNotice() {
@@ -688,7 +688,7 @@
 
   async function loadStatus() {
     try {
-      const response = await fetch('/api/status', {
+      const response = await fetch('api/status', {
         headers: { Accept: 'application/json' },
         cache: 'no-store'
       });
@@ -869,7 +869,7 @@
 
     let response;
     try {
-      response = await fetch('/api/plan', {
+      response = await fetch('api/plan', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
