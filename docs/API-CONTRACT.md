@@ -33,7 +33,7 @@
 ```json
 {
   "ok": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "demo": true,
   "demo_reason": "未配置 AMAP_KEY，使用演示数据",
   "defaults": {

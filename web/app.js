@@ -11,9 +11,7 @@
  */
 (function () {
   // ===== 常量 =====
-  const THEME_KEY = 'supernav-theme';
-  const SAVED_LOCATION_KEY = 'supernav-saved-location';
-  const THEME_VALUES = ['light', 'gray', 'dark'];
+  const SAVED_LOCATION_COOKIE = 'supernav_saved_location';
   const MIN_POINTS = 2;
   const MAX_POINTS = 10;
   const DEFAULT_MODE = 'walking';
@@ -48,14 +46,6 @@
     { value: 2, label: '少换乘' },
     { value: 1, label: '最经济' }
   ];
-
-  const MODE_COLORS = {
-    walking: '#22c55e',
-    bicycling: '#06b6d4',
-    transit: '#3b82f6',
-    taxi: '#f59e0b',
-    driving: '#a855f7'
-  };
 
   const EXAMPLES = [
     {
@@ -160,29 +150,41 @@
     return Number.isFinite(number) ? number : null;
   }
 
-  function safeGetItem(key) {
+  // 单灰色主题（无主题切换）：位置保存用 Cookie，不依赖浏览器主题偏好。
+  function setCookie(name, value) {
     try {
-      return window.localStorage.getItem(key);
+      document.cookie =
+        name +
+        '=' +
+        encodeURIComponent(value) +
+        '; Max-Age=31536000; Path=/; SameSite=Lax';
+    } catch (error) {
+      // Cookie 不可用时仍可正常定位，只是刷新后不保留
+    }
+  }
+
+  function getCookie(name) {
+    try {
+      const cookies = document.cookie ? document.cookie.split('; ') : [];
+      for (let i = 0; i < cookies.length; i += 1) {
+        const parts = cookies[i].split('=');
+        if (parts[0] === name) {
+          return decodeURIComponent(parts.slice(1).join('='));
+        }
+      }
     } catch (error) {
       return null;
     }
+    return null;
   }
 
-  function safeSetItem(key, value) {
-    try {
-      window.localStorage.setItem(key, value);
-    } catch (error) {
-      // 隐私模式 / localStorage 不可用：主题切换仍然生效，只是不持久化。
-    }
-  }
-
-  // ===== 上次定位：浏览器本地保存，刷新后自动恢复 =====
+  // ===== 上次定位：浏览器 Cookie 保存，刷新后自动恢复 =====
   function saveSavedLocation(location) {
-    safeSetItem(SAVED_LOCATION_KEY, JSON.stringify(location));
+    setCookie(SAVED_LOCATION_COOKIE, JSON.stringify(location));
   }
 
   function loadSavedLocation() {
-    const raw = safeGetItem(SAVED_LOCATION_KEY);
+    const raw = getCookie(SAVED_LOCATION_COOKIE);
     if (!raw) {
       return null;
     }
@@ -332,10 +334,6 @@
     return modeLabel(leg && leg.mode);
   }
 
-  function modeColor(mode) {
-    return MODE_COLORS[mode] || 'var(--accent)';
-  }
-
   function stepTypeLabel(type) {
     const labels = {
       walking: '步行',
@@ -425,29 +423,7 @@
     Object.keys(ids).forEach(function (key) {
       dom[key] = document.getElementById(ids[key]);
     });
-    dom.themeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-theme-choice]'));
     dom.planModeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-plan-mode]'));
-  }
-
-  // ===== 主题 =====
-  function initTheme() {
-    let theme = safeGetItem(THEME_KEY);
-    if (THEME_VALUES.indexOf(theme) < 0) {
-      theme = 'light';
-    }
-    applyTheme(theme, false);
-  }
-
-  function applyTheme(theme, persist) {
-    const next = THEME_VALUES.indexOf(theme) >= 0 ? theme : 'light';
-    document.documentElement.setAttribute('data-theme', next);
-    dom.themeButtons.forEach(function (button) {
-      const active = button.getAttribute('data-theme-choice') === next;
-      button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-    if (persist) {
-      safeSetItem(THEME_KEY, next);
-    }
   }
 
   // ===== 规划模式（方式对比 / 组合行程）=====
@@ -1473,7 +1449,7 @@
 
       const head = el('span', 'compare-head');
       const dot = el('span', 'mode-dot');
-      dot.style.backgroundColor = modeColor(entry.mode);
+      dot.className = 'mode-dot';
       head.appendChild(dot);
       head.appendChild(el('span', 'compare-name', entry.mode_label));
       if (!entry.available) {
@@ -1568,7 +1544,7 @@
     dom.detailMode.hidden = false;
     clear(dom.detailMode);
     const dot = el('span', 'mode-dot');
-    dot.style.backgroundColor = modeColor(entry.mode);
+    dot.className = 'mode-dot';
     dom.detailMode.appendChild(dot);
     dom.detailMode.appendChild(document.createTextNode(entry.mode_label));
     dom.detailMode.setAttribute('data-mode', entry.mode);
@@ -1708,7 +1684,7 @@
       }
       const chip = el('span', 'combo-mode');
       const dot = el('span', 'combo-dot');
-      dot.style.backgroundColor = modeColor(leg.mode);
+      dot.className = 'mode-dot';
       chip.appendChild(dot);
       chip.appendChild(document.createTextNode(modeLabelForLeg(leg)));
       dom.totalsCombo.appendChild(chip);
@@ -1819,7 +1795,7 @@
     const badge = el('span', 'mode-badge');
     badge.setAttribute('data-mode', isNonEmptyString(leg.mode) ? leg.mode : 'unknown');
     const dot = el('span', 'mode-dot');
-    dot.style.backgroundColor = modeColor(leg.mode);
+    dot.className = 'mode-dot';
     badge.appendChild(dot);
     badge.appendChild(document.createTextNode(modeLabelForLeg(leg)));
     return badge;
@@ -1984,7 +1960,7 @@
           return point.x.toFixed(2) + ',' + point.y.toFixed(2);
         }).join(' '),
         fill: 'none',
-        stroke: modeColor(segment.leg.mode),
+        class: 'route-line',
         'stroke-width': '4',
         'stroke-linecap': 'round',
         'stroke-linejoin': 'round',
@@ -2018,7 +1994,6 @@
     segments.forEach(function (segment) {
       const item = el('li', 'route-legend-item');
       const line = el('span', 'legend-line');
-      line.style.backgroundColor = modeColor(segment.leg.mode);
       item.appendChild(line);
       item.appendChild(
         document.createTextNode('第 ' + (segment.index + 1) + ' 段 · ' + modeLabelForLeg(segment.leg))
@@ -2045,12 +2020,6 @@
 
   // ===== 事件绑定 / 初始化 =====
   function bindEvents() {
-    dom.themeButtons.forEach(function (button) {
-      button.addEventListener('click', function () {
-        applyTheme(button.getAttribute('data-theme-choice'), true);
-      });
-    });
-
     dom.planModeButtons.forEach(function (button) {
       button.addEventListener('click', function () {
         setPlanMode(button.getAttribute('data-plan-mode'));
@@ -2161,7 +2130,6 @@
   function init() {
     cacheDom();
     renderTransitStrategies();
-    initTheme();
     updatePlanModeUI();
     renderExamples();
     applyDefaults();

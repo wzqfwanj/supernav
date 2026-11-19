@@ -287,11 +287,18 @@ def main() -> int:
     r = s.post(f"{BASE_URL}/api/plan", json=body, timeout=TIMEOUT)
     check("location 形式点位可用", r.status_code == 200, f"{r.status_code} {r.text[:160]}")
 
-    # 7. 前端静态资源
+    # 7. 前端静态资源（黑白极简单主题约束）
     r = s.get(f"{BASE_URL}/", timeout=TIMEOUT)
     html = r.text
     check("GET / 返回 HTML", r.status_code == 200 and "<html" in html.lower())
-    check("首页含三主题线索", any(k in html for k in ("明", "灰", "暗")) or "theme" in html.lower())
+    check("首页含系统名 SuperNav", "<h1>SuperNav</h1>" in html or ">SuperNav<" in html)
+    check("首页含副标题说明", 'class="sub"' in html)
+    check(
+        "无主题切换控件",
+        "data-theme-choice" not in html and "theme-switch" not in html,
+    )
+    check("无内联主题脚本", "supernav-theme" not in html and "data-theme" not in html)
+    css_text = ""
     assets = re.findall(r'(?:src|href)="([^"]+)"', html)
     local_assets = [
         a for a in assets if not a.startswith(("http://", "https://", "data:", "#", "mailto:"))
@@ -301,8 +308,17 @@ def main() -> int:
             url = asset if asset.startswith("/") else f"{BASE_URL}/{asset}"
             ar = s.get(url, timeout=TIMEOUT)
             check(f"静态资源可访问 {asset}", ar.status_code == 200, f"status={ar.status_code}")
+            if asset.endswith("styles.css") and ar.status_code == 200:
+                css_text = ar.text
     else:
         check("首页引用了本地资源", False, "未找到 src/href 资源")
+    if css_text:
+        hex_colors = re.findall(r"#[0-9a-fA-F]{3,8}", css_text)
+        check(
+            "CSS 仅一套灰色变量（5 个色值）",
+            len(set(hex_colors)) <= 5 and "[data-theme" not in css_text,
+            f"hex={sorted(set(hex_colors))}",
+        )
 
     # 8. 前端不得泄露 Key（静态文件粗查）
     for path in ("/app.js", "/styles.css"):

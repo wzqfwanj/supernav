@@ -10,95 +10,45 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
-/* ===== 主题变量 ===== */
 :root {
-  color-scheme: light;
-  --bg: #f6f6f4;
-  --surface: #ffffff;
-  --surface-2: #f1f2f1;
-  --surface-3: #e9ebea;
-  --text: #1c2128;
-  --text-muted: #5c6673;
-  --text-faint: #7c8694;
-  --border: #e2e5e8;
-  --border-strong: #c9ced4;
-  --accent: #2563eb;
-  --accent-strong: #1d4ed8;
-  --accent-ink: #ffffff;
-  --accent-soft: rgba(37, 99, 235, 0.1);
-  --accent-soft-strong: rgba(37, 99, 235, 0.18);
-  --danger: #b42318;
-  --danger-soft: #fdf0ee;
-  --danger-border: #f2c4bd;
-  --warn-ink: #8a5300;
-  --warn-soft: #fff7e6;
-  --warn-border: #f0cf8c;
-  --ok: #18794e;
-  --ok-soft: #e9f7ef;
-  --chip: #f2f4f6;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 4px 16px rgba(16, 24, 40, 0.05);
-  --radius-lg: 16px;
-  --radius: 12px;
-  --radius-sm: 9px;
-  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, "Liberation Mono", monospace;
-  --transition: 160ms ease;
-}
+  /* 黑白灰单主题（开发约束）：只使用 --bg / --fg / --muted / --line / --hover */
+  --bg: #3a3f47;
+  --fg: #f2f3f5;
+  --muted: #b3b9c2;
+  --line: #4b525c;
+  --hover: #454c56;
 
-[data-theme="gray"] {
-  color-scheme: light;
-  --bg: #d7dade;
-  --surface: #f1f2f4;
-  --surface-2: #e6e8eb;
-  --surface-3: #dbdee2;
-  --text: #20242a;
-  --text-muted: #4f5761;
-  --text-faint: #6b7480;
-  --border: #c3c8ce;
-  --border-strong: #aab1b9;
-  --accent: #475569;
-  --accent-strong: #334155;
-  --accent-ink: #ffffff;
-  --accent-soft: rgba(71, 85, 105, 0.12);
-  --accent-soft-strong: rgba(71, 85, 105, 0.22);
-  --danger: #a12b22;
-  --danger-soft: #f4e4e2;
-  --danger-border: #d9b3ae;
-  --warn-ink: #6f4500;
-  --warn-soft: #f5ecd7;
-  --warn-border: #dcc48b;
-  --ok: #1d6b48;
-  --ok-soft: #e2efe8;
-  --chip: #e3e6e9;
-  --shadow: 0 1px 2px rgba(20, 26, 33, 0.08), 0 4px 14px rgba(20, 26, 33, 0.06);
-}
-
-[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #101317;
-  --surface: #181c22;
-  --surface-2: #1f242b;
-  --surface-3: #262c35;
-  --text: #e7ebf0;
-  --text-muted: #9aa5b3;
-  --text-faint: #7f8a99;
-  --border: #2a313a;
-  --border-strong: #3b444f;
-  --accent: #7aa2ff;
-  --accent-strong: #9dbaff;
-  --accent-ink: #0b1220;
-  --accent-soft: rgba(122, 162, 255, 0.14);
-  --accent-soft-strong: rgba(122, 162, 255, 0.24);
-  --danger: #ff9b92;
-  --danger-soft: #33201e;
-  --danger-border: #5d3733;
-  --warn-ink: #f2c66d;
-  --warn-soft: #2b2415;
-  --warn-border: #5c4c22;
-  --ok: #5fd39b;
-  --ok-soft: #14291f;
-  --chip: #232932;
+  /* 语义别名：只引用上面 5 个灰阶变量，不新增色值 */
+  --surface: var(--bg);
+  --surface-2: var(--hover);
+  --surface-3: var(--hover);
+  --text: var(--fg);
+  --text-muted: var(--muted);
+  --text-faint: var(--muted);
+  --border: var(--line);
+  --border-strong: var(--line);
+  --accent: var(--fg);
+  --accent-strong: var(--fg);
+  --accent-ink: var(--bg);
+  --accent-soft: var(--hover);
+  --accent-soft-strong: var(--hover);
+  --danger: var(--fg);
+  --danger-soft: var(--hover);
+  --danger-border: var(--line);
+  --warn-ink: var(--muted);
+  --warn-soft: var(--hover);
+  --warn-border: var(--line);
+  --ok: var(--muted);
+  --ok-soft: var(--hover);
+  --chip: var(--hover);
   --shadow: none;
+  --radius-lg: 8px;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  --transition: 160ms ease;
+  color-scheme: dark;
 }
 
 /* ===== 基础 ===== */
@@ -127,8 +77,6 @@ body {
 
 body,
 .card,
-.topbar,
-.theme-switch,
 .btn,
 .point-input,
 .mode-select,
@@ -190,97 +138,6 @@ main.shell > * + * {
   outline-offset: 2px;
 }
 
-/* ===== 顶栏 ===== */
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-
-.topbar-inner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 16px;
-  padding-bottom: 16px;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  min-width: 0;
-}
-
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-  border-radius: 10px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 17px;
-  line-height: 1;
-}
-
-.brand-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-
-.brand-name {
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.brand-sub {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.theme-switch {
-  display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  flex: 0 0 auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
-.theme-option {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.4;
-  padding: 5px 13px;
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.theme-option:hover {
-  color: var(--text);
-  background: var(--surface-2);
-}
-
-.theme-option[aria-pressed="true"] {
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-weight: 600;
-}
-
 /* ===== 横幅 / 提示 ===== */
 .demo-banner {
   display: flex;
@@ -339,7 +196,6 @@ main.shell > * + * {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 20px;
-  box-shadow: var(--shadow);
 }
 
 .card-head {
@@ -425,12 +281,10 @@ main.shell > * + * {
 .point-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .point-input.is-invalid {
   border-color: var(--danger);
-  box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
 .point-input.is-located {
@@ -487,7 +341,6 @@ main.shell > * + * {
 .mode-select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .field-hint {
@@ -706,7 +559,6 @@ main.shell > * + * {
 .field select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .settings-actions {
@@ -1376,7 +1228,6 @@ main.shell > * + * {
 .compare-item.is-selected {
   border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .compare-item.is-unavailable {
@@ -1607,16 +1458,8 @@ main.shell > * + * {
 }
 
 @media (max-width: 420px) {
-  .theme-option {
-    padding: 5px 10px;
-  }
-
   .leg-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .brand-sub {
-    display: none;
   }
 
   .compare-grid {
@@ -1633,5 +1476,214 @@ main.shell > * + * {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* ===== 黑白灰极简模板落实（前端约束） ===== */
+html {
+  color-scheme: dark;
+}
+
+body {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 20px 72px;
+}
+
+.head {
+  margin-bottom: 40px;
+}
+
+.head h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.content {
+  min-width: 0;
+}
+
+:where(.planner, .settings, .compare-card, .totals-card, .route-card, .legs-section, .empty-state) {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: 24px 0;
+  margin: 0;
+}
+
+.planner {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.demo-banner,
+.status-notice,
+.alert {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 10px 12px;
+}
+
+.demo-tag {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 7px;
+}
+
+.btn {
+  background: transparent;
+  border-color: var(--line);
+  border-radius: 4px;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.btn-primary {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--fg);
+  border-color: var(--fg);
+  opacity: 0.88;
+}
+
+.point-input,
+.mode-select,
+.field input,
+.field select {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--line);
+  border-radius: 4px;
+}
+
+.point-input:focus,
+.mode-select:focus,
+.field input:focus,
+.field select:focus {
+  border-color: var(--fg);
+  outline: 1px solid var(--fg);
+  outline-offset: 1px;
+}
+
+.compare-item {
+  background: transparent;
+  border-color: var(--line);
+  border-radius: 4px;
+}
+
+.compare-item:hover {
+  background: var(--hover);
+  border-color: var(--fg);
+}
+
+.compare-item.is-selected {
+  background: transparent;
+  border-color: var(--fg);
+  outline: 1px solid var(--fg);
+  outline-offset: -1px;
+}
+
+.compare-item.is-unavailable {
+  background: transparent;
+}
+
+.mode-error-card {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 14px 16px;
+  margin-top: 16px;
+}
+
+.mode-dot {
+  background: var(--muted);
+  border-radius: 50%;
+}
+
+.mode-badge,
+.source-badge,
+.leg-index,
+.compare-badge,
+.detail-mode {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: 4px;
+}
+
+.legend-line {
+  background: var(--muted);
+  height: 2px;
+  border-radius: 0;
+}
+
+.route-canvas {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.route-svg .route-line {
+  fill: none;
+  stroke: var(--muted);
+}
+
+.route-svg .marker-circle {
+  fill: var(--bg);
+  stroke: var(--muted);
+}
+
+.route-svg .marker-text {
+  fill: var(--fg);
+  font-family: var(--font-sans);
+}
+
+.route-svg .waypoint-circle {
+  fill: var(--bg);
+  stroke: var(--muted);
+}
+
+.example-btn,
+.plan-mode-option,
+.compare-item,
+.btn {
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
+}
+
+::selection {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+@media (max-width: 560px) {
+  main {
+    padding: 40px 16px 56px;
   }
 }

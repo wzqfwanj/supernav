@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SuperNav">
-  <rect width="64" height="64" rx="14" fill="#2563eb"/>
-  <path d="M17 46 L30 30 L42 39 L50 20" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="17" cy="46" r="4.5" fill="#ffffff"/>
-  <circle cx="50" cy="20" r="4.5" fill="#ffffff"/>
+  <rect width="64" height="64" rx="14" fill="#3a3f47"/>
+  <path d="M17 46 L30 30 L42 39 L50 20" fill="none" stroke="#f2f3f5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="17" cy="46" r="4.5" fill="#f2f3f5"/>
+  <circle cx="50" cy="20" r="4.5" fill="#f2f3f5"/>
 </svg>
