@@ -82,8 +82,8 @@ MONEY_TOL = 0.011  # 1 分钱容差（金额四舍五入到 0.01）
 # 内置示例地点（演示模式覆盖，docs/API-CONTRACT.md 第 6 节）
 PLACES = ["北京南站", "故宫博物院", "北京西站", "国贸", "中关村", "天安门", "王府井", "三里屯", "首都机场", "北京大学"]
 
-# 当前契约实现版本（backend/__init__.py 的 __version__；/api/compare 从 0.1.1、定位 0.3.0、/api/regeo 0.4.0 起）
-EXPECTED_VERSION = "0.4.0"
+# 当前契约实现版本（backend/__init__.py 的 __version__；v0.5.0 起前端为黑白灰单主题）
+EXPECTED_VERSION = "0.5.0"
 
 
 # --------------------------------------------------------------------------- 小工具
@@ -1123,7 +1123,7 @@ class Suite:
             ("docs.regeo_documented", "逆地理编码" in docs and "/v3/geocode/regeo" in docs),
             ("docs.regeo_endpoint_section", "### 3.5 `GET /api/regeo`" in docs),
             ("docs.regeo_demo_note", "演示模式返回" in docs and "坐标文本" in docs),
-            ("version.0.4.0", '0.4.0' in read_text(PROJECT_ROOT / "backend" / "__init__.py")),
+            (f"version.{EXPECTED_VERSION}", EXPECTED_VERSION in read_text(PROJECT_ROOT / "backend" / "__init__.py")),
         ]
         for label, ok in checks:
             self.ck.check(f"location.code.{label}", ok, label)
@@ -1308,15 +1308,24 @@ class Suite:
         status_code, text, data = self.fetch("static.index", "/")
         self.ck.eq("static.index.status_code", status_code, 200)
         self.ck.check("static.index.is_html", "text/html" in self.last_content_type, self.last_content_type)
-        self.ck.check("static.index.title", "<title>SuperNav · 交通规划</title>" in (text or ""), text[:200])
+        self.ck.check("static.index.title", "<title>SuperNav</title>" in (text or ""), "浏览器标签应固定为 SuperNav")
         self.ck.check("static.index.has_demo_banner", 'id="demo-banner"' in (text or ""), "缺少演示模式横幅")
-        self.ck.check("static.index.has_theme_switch", 'data-theme-choice="light"' in (text or "") and 'data-theme-choice="gray"' in (text or "") and 'data-theme-choice="dark"' in (text or ""), "缺少三主题切换按钮")
+        self.ck.check(
+            "static.index.single_theme_no_switch",
+            "theme-switch" not in (text or "") and "theme-option" not in (text or "") and "data-theme" not in (text or ""),
+            "单主题模板不应有主题切换控件/data-theme",
+        )
+        self.ck.check(
+            "static.index.template_structure",
+            'class="head"' in (text or "") and "<h1>SuperNav</h1>" in (text or "") and 'class="sub"' in (text or "") and 'class="content"' in (text or ""),
+            "模板结构应为 .head(h1/.sub) + .content",
+        )
         self.ck.check("static.index.local_assets", 'href="styles.css"' in (text or "") and 'src="app.js"' in (text or ""), "应引用同源 styles.css / app.js")
         self.samples["index"] = text
 
         for name, path, marker, expected_type in [
-            ("styles", "/styles.css", "[data-theme=\"dark\"]", "css"),
-            ("app", "/app.js", "const THEME_KEY", "javascript"),
+            ("styles", "/styles.css", "--bg: #3a3f47", "css"),
+            ("app", "/app.js", "const SAVED_LOCATION_COOKIE", "javascript"),
             ("favicon", "/favicon.svg", "<svg", "svg"),
         ]:
             status_code, text, data = self.fetch(f"static.{name}", path)
@@ -1343,7 +1352,7 @@ class Suite:
 
     # -- 7. 前端关键逻辑代码审查 ---------------------------------------------
     def check_frontend_source(self) -> None:
-        print("\n== 7. 前端关键逻辑代码审查（三主题/途经点/演示横幅/错误展示/无 CDN）==")
+        print("\n== 7. 前端代码审查（单灰主题/模板/功能/定位 Cookie/无外链）==")
         index = read_text(PROJECT_ROOT / "web" / "index.html")
         app = read_text(PROJECT_ROOT / "web" / "app.js")
         styles = read_text(PROJECT_ROOT / "web" / "styles.css")
@@ -1351,19 +1360,42 @@ class Suite:
         def present(label: str, condition: bool, detail: str = "") -> None:
             self.ck.check(f"frontend.{label}", condition, detail)
 
-        # 三主题
-        present("themes.css_light_root", ":root" in styles and "--bg:" in styles.split("[data-theme=\"gray\"]")[0])
-        present("themes.css_gray", '[data-theme="gray"]' in styles)
-        present("themes.css_dark", '[data-theme="dark"]' in styles)
-        present("themes.css_dark_scheme", re.search(r'\[data-theme="dark"\]\s*\{[^}]*color-scheme:\s*dark', styles, re.S) is not None)
-        present("themes.html_buttons", all(f'data-theme-choice="{value}"' in index for value in ("light", "gray", "dark")))
-        present("themes.html_bootstrap_localstorage", "supernav-theme" in index and "localStorage.getItem" in index)
-        present("themes.js_key", re.search(r"THEME_KEY\s*=\s*['\"]supernav-theme['\"]", app) is not None)
-        present("themes.js_values", all(f"'{value}'" in app for value in ("light", "gray", "dark")))
-        present("themes.js_localstorage_read", "localStorage.getItem" in app and "safeGetItem" in app)
-        present("themes.js_localstorage_write", "localStorage.setItem" in app and "safeSetItem" in app)
-        present("themes.js_apply_data_theme", "setAttribute('data-theme'" in app or 'setAttribute("data-theme"' in app)
-        present("themes.js_click_bind", "dom.themeButtons.forEach" in app and "applyTheme(" in app)
+        # ===== 单灰主题 + 模板结构（v0.5.0 前端约束）=====
+        present("theme.single_no_data_theme", "data-theme" not in index and "data-theme" not in app and "[data-theme" not in styles)
+        present("theme.no_switch_dom", "theme-switch" not in index and "theme-option" not in index and "themeButtons" not in app)
+        present("theme.no_localstorage", "localStorage" not in app and "localStorage" not in index)
+        present("theme.no_theme_query", "?theme=" not in index and "?theme=" not in app)
+        present("theme.template_head", 'class="head"' in index and "<h1>SuperNav</h1>" in index)
+        present("theme.h1_title", "<title>SuperNav</title>" in index and "<h1>SuperNav</h1>" in index)
+        present("theme.sub", 'class="sub"' in index)
+        present("theme.content", 'class="content"' in index)
+        present("theme.color_scheme_dark", 'name="color-scheme"' in index and "color-scheme: dark" in styles)
+        present("theme.560_breakpoint", "@media (max-width: 560px)" in styles)
+        present("theme.no_box_shadow", "box-shadow" not in styles)
+        present("theme.no_external_css", "@import" not in styles and re.search(r"https?://", styles) is None)
+        present(
+            "theme.root_five_vars",
+            all(
+                f"--{name}: {value}" in styles
+                for name, value in (
+                    ("bg", "#3a3f47"),
+                    ("fg", "#f2f3f5"),
+                    ("muted", "#b3b9c2"),
+                    ("line", "#4b525c"),
+                    ("hover", "#454c56"),
+                )
+            ),
+        )
+        hex_values = set(re.findall(r"#[0-9a-fA-F]{6}\b", styles))
+        present(
+            "theme.five_literal_colors",
+            hex_values == {"#3a3f47", "#f2f3f5", "#b3b9c2", "#4b525c", "#454c56"},
+            f"literal colors={sorted(hex_values)}",
+        )
+        present("theme.no_rgb_hsl_colors", re.search(r"rgba?\(|hsla?\(", styles) is None)
+        non_var_part = re.sub(r":root\s*\{.*?\}", "", styles, flags=re.S)
+        present("theme.colors_via_vars_only", re.search(r"#[0-9a-fA-F]{3,8}", non_var_part) is None, "变量定义之外不应出现字面色值")
+        present("theme.cookie_no_localstorage", "document.cookie" in app and "localStorage" not in app)
 
         # 添加 / 删除途经点、10 点上限
         present("points.add_button", 'id="add-point"' in index and "添加途经点" in index)
@@ -1459,16 +1491,18 @@ class Suite:
         present("locate.manual_edit_clears", "state.pointLocations[index] = null" in app and "不再使用浏览器定位坐标" in app)
         present("locate.css", ".btn-locate" in styles and ".point-input.is-located" in styles)
 
-        # ===== 上次定位保存/恢复（v0.4.0）=====
-        present("locate.saved_key", "supernav-saved-location" in app and "SAVED_LOCATION_KEY" in app)
-        present("locate.saved_helpers", all(name in app for name in ("saveSavedLocation", "loadSavedLocation", "restoreSavedLocation")))
+        # ===== 上次定位保存/恢复（v0.5.0：Cookie，无 localStorage）=====
+        present("locate.saved_cookie_key", "supernav_saved_location" in app and "SAVED_LOCATION_COOKIE" in app)
+        present("locate.cookie_helpers", "function setCookie" in app and "function getCookie" in app and app.count("document.cookie") >= 2)
+        present("locate.cookie_attributes", "Max-Age=31536000" in app and "Path=/" in app and "SameSite=Lax" in app)
         present("locate.saved_json", "JSON.stringify(location)" in app and "JSON.parse(raw)" in app)
         present("locate.saved_validation", "lng < -180" in app and "lat < -90" in app and "updatedAt" in app)
         present(
             "locate.restore_on_init",
             "function init()" in app and "restoreSavedLocation();" in app and app.index("restoreSavedLocation();") > app.index("function init()"),
-            "init() 中应恢复上次定位",
+            "init() 中应恢复上次定位（Cookie）",
         )
+        present("locate.no_localstorage", "localStorage" not in app)
         present("locate.regeo_fetch", "api/regeo?location=" in app and "encodeURIComponent(" in app)
         present("locate.regeo_timeout", "fetchRegeoAddress" in app and "10000" in app and "controller.abort()" in app)
         present("locate.fallback_label", "function locateFallbackLabel" in app and "当前位置（" in app)
@@ -1491,12 +1525,7 @@ class Suite:
         present("offline.no_cdn", not re.search(r"(cdn\.|unpkg|jsdelivr|googleapis|bootstrap)", index + app, re.I), "出现 CDN 引用")
         present("offline.css_no_import", "@import" not in styles and not re.search(r"url\(\s*['\"]?https?://", styles), "CSS 引用外部资源")
         present("offline.index_script_local", 'src="app.js"' in index and 'href="styles.css"' in index)
-
-        # 三主题变量齐备（不是空壳）
-        for theme in ("gray", "dark"):
-            block_match = re.search(r'\[data-theme="' + theme + r'"\]\s*\{(.*?)\}', styles, re.S)
-            block = block_match.group(1) if block_match else ""
-            present(f"themes.{theme}_variables", "--bg:" in block and "--text:" in block and "--surface:" in block)
+        present("offline.single_js", 'src="app.js"' in index and len(re.findall(r"<script\b", index)) == 1, "只应加载同源 app.js 一个脚本")
 
     # -- 8. node --check / 内联脚本语法 --------------------------------------
     def check_node_syntax(self) -> None:
@@ -1519,7 +1548,8 @@ class Suite:
             proc = subprocess.run([node, "--check", str(inline_path)], capture_output=True, text=True, timeout=60)
             self.ck.check("node.check_index_inline", proc.returncode == 0, (proc.stderr or proc.stdout)[:500])
         else:
-            self.ck.warn("node.check_index_inline", "index.html 未找到内联脚本（跳过）")
+            # v0.5.0 单主题模板不再需要内联主题引导脚本（无 data-theme/localStorage）
+            self.ck.check("node.no_inline_script", True, "index.html 无内联脚本（符合单主题模板）")
 
     # -- 9. 后端 pytest（离线 mock 单测）-------------------------------------
     def check_pytest(self) -> None:

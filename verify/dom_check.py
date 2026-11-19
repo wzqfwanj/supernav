@@ -5,13 +5,14 @@
 ``http://127.0.0.1:8014/`` 页面，模拟用户点击并读取 DOM，验证：
 
 1. 默认「方式对比」模式：隐藏每段方式下拉、演示横幅可见；
-2. 起点行「定位」按钮：授予 Playwright geolocation 后点击填入「我的位置」，提交 payload 为 `{location, name:"我的位置"}`，
-   且定位后可手动改回地址（清除定位坐标）；无权限时错误提示路径可验证；
-3. 提交后 5 张方式卡按 公交→驾车→打车→骑行→步行 排列，均显示 耗时/里程/费用；
-4. 默认选中第一个可用方式，点击任一张卡切换详情（合计/逐段/路线随卡片变化，数值与 /api/compare 响应一致）；
-5. 拦截 /api/compare 返回 available=false 的响应，点击不可用卡显示错误态、详情隐藏；
-6. 切换到「组合行程」：每段方式下拉恢复，提交 /api/plan 正常出详情；
-7. 表单错误展示、三主题切换 + localStorage 持久化。
+2. 单灰主题模板：无 data-theme/主题按钮/localStorage，body 计算背景 rgb(58,63,71)、前景 rgb(242,243,245)，
+   h1/title=SuperNav、.sub 说明、.head + .content 模板结构；375px 无横向滚动；无外部请求；
+3. 起点行「定位」按钮：授予 Playwright geolocation 后点击，经 `/api/regeo` 回显详细地址（demo 为坐标文本），
+   保存到 **Cookie `supernav_saved_location`**；reload 后自动恢复；无权限时错误提示；
+4. 提交后 5 张方式卡按 公交→驾车→打车→骑行→步行 排列，均显示 耗时/里程/费用；
+5. 默认选中第一个可用方式，点击任一张卡切换详情（合计/逐段/路线随卡片变化，数值与 /api/compare 响应一致）；
+6. 拦截 /api/compare 返回 available=false 的响应，点击不可用卡显示错误态、详情隐藏；
+7. 切换到「组合行程」：每段方式下拉恢复，提交 /api/plan 正常出详情；表单错误展示；无 console/pageerror。
 
 只写 verify/**；不修改业务代码。用法::
 
@@ -33,6 +34,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote
 
 # 复用 smoke.py 的服务管理与小工具（同目录）
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -195,8 +197,10 @@ def main(argv: list[str] | None = None) -> int:
             page = context.new_page()
             console_errors: list[str] = []
             page_errors: list[str] = []
+            requests_seen: list[str] = []
             page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
             page.on("pageerror", lambda error: page_errors.append(str(error)))
+            page.on("request", lambda request: requests_seen.append(request.url))
             ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
             # ---------------------------------------------------------- 1. 加载与默认状态
@@ -206,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                 "() => { const banner = document.querySelector('#demo-banner'); return banner && !banner.hidden; }",
                 timeout=20000,
             )
-            ck.eq("dom.title", page.title(), "SuperNav · 交通规划")
+            ck.eq("dom.title", page.title(), "SuperNav")
             ck.check("dom.demo_banner_visible", page.is_visible("#demo-banner"), "演示模式横幅应可见")
             ck.eq("dom.compare_mode_default", page.get_attribute('[data-plan-mode="compare"]', "aria-pressed"), "true")
             ck.eq("dom.combine_mode_default_off", page.get_attribute('[data-plan-mode="combine"]', "aria-pressed"), "false")
@@ -216,6 +220,35 @@ def main(argv: list[str] | None = None) -> int:
                 "一次对比 5 种方式" in page.inner_text("#mode-switch-hint"),
                 page.inner_text("#mode-switch-hint"),
             )
+
+            # ---------------------------------------------------------- 1b. 单灰主题 + 模板结构（v0.5.0）
+            ck.eq("dom.theme.h1", page.inner_text("h1").strip(), "SuperNav")
+            sub_text = page.inner_text(".sub").strip()
+            ck.check("dom.theme.sub", 0 < len(sub_text) <= 30, sub_text)
+            ck.check("dom.template.head_visible", page.is_visible("header.head"), "模板页头 .head 应存在")
+            ck.check("dom.template.content_visible", page.is_visible("div.content"), "模板内容区 .content 应存在")
+            ck.eq("dom.template.main", page.locator("main").count(), 1)
+            ck.eq("dom.theme.no_data_theme_nodes", page.evaluate("() => document.querySelectorAll('[data-theme]').length"), 0)
+            ck.eq(
+                "dom.theme.no_switch_dom",
+                page.evaluate(
+                    "() => document.querySelectorAll('[data-theme-choice], .theme-switch, .theme-option, #theme-switch').length"
+                ),
+                0,
+            )
+            theme_state = page.evaluate(
+                "() => { const body = getComputedStyle(document.body);"
+                " const root = getComputedStyle(document.documentElement);"
+                " return { bg: body.backgroundColor, fg: body.color, colorScheme: root.colorScheme,"
+                " vars: ['--bg','--fg','--muted','--line','--hover'].map(k => root.getPropertyValue(k).trim()),"
+                " localStorageLength: window.localStorage.length }; }"
+            )
+            samples["theme_state"] = theme_state
+            ck.eq("dom.theme.body_bg", theme_state.get("bg"), "rgb(58, 63, 71)")
+            ck.eq("dom.theme.body_fg", theme_state.get("fg"), "rgb(242, 243, 245)")
+            ck.eq("dom.theme.color_scheme_dark", theme_state.get("colorScheme"), "dark")
+            ck.eq("dom.theme.five_vars", theme_state.get("vars"), ["#3a3f47", "#f2f3f5", "#b3b9c2", "#4b525c", "#454c56"])
+            ck.eq("dom.theme.initial_no_localstorage", theme_state.get("localStorageLength"), 0)
 
             # ---------------------------------------------------------- 2. 起点定位 + 详细地址回显/保存（v0.4.0）
             ck.eq("dom.locate.start_button_count", page.locator('#points-list [data-locate-index="0"]').count(), 1)
@@ -248,11 +281,16 @@ def main(argv: list[str] | None = None) -> int:
                 bool(located_title) and "已定位并保存" in located_title and LOCATED_DETAIL in located_title,
                 located_title,
             )
-            saved_raw = page.evaluate("() => window.localStorage.getItem('supernav-saved-location')")
-            saved = json.loads(saved_raw) if saved_raw else {}
-            samples["saved_location"] = saved
+            cookie_header = page.evaluate("() => document.cookie")
+            cookie_value = ""
+            for part in (cookie_header or "").split("; "):
+                if part.startswith("supernav_saved_location="):
+                    cookie_value = part.split("=", 1)[1]
+                    break
+            saved = json.loads(unquote(cookie_value)) if cookie_value else {}
+            samples["saved_cookie"] = {"header": cookie_header, "value": saved}
             ck.check(
-                "dom.locate.saved_localstorage",
+                "dom.locate.saved_cookie",
                 isinstance(saved, dict)
                 and saved.get("address") == LOCATED_DETAIL
                 and abs(float(saved.get("lng", 0)) - 116.4) < 1e-9
@@ -260,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
                 and float(saved.get("updatedAt", 0)) > 0,
                 saved,
             )
+            ck.eq("dom.locate.cookie_name", "supernav_saved_location=" in (cookie_header or ""), True)
+            ck.eq("dom.locate.no_localstorage_after_locate", page.evaluate("() => window.localStorage.length"), 0)
             samples["locate"] = {"value": LOCATED_DETAIL, "title": located_title, "button": "重新定位"}
             # 手动修改起点文本后应清除当前定位坐标/样式
             page.fill("#point-input-0", "北京南站")
@@ -272,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
                 page.eval_on_selector("#point-input-0", "element => !element.classList.contains('is-located')"),
                 "手动输入后应移除定位样式",
             )
-            # 刷新页面：应从 localStorage 自动恢复上次定位（详细地址 + 「重新定位」）
+            # 刷新页面：应从 Cookie 自动恢复上次定位（详细地址 + 「重新定位」）
             page.reload(wait_until="load")
             wait_app_ready(page)
             page.wait_for_function(
@@ -289,8 +329,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             restored_title = page.get_attribute("#point-input-0", "title")
             ck.check("dom.locate.restored_title", bool(restored_title) and "已定位并保存" in restored_title, restored_title)
-            saved_after_reload = page.evaluate("() => window.localStorage.getItem('supernav-saved-location')")
-            ck.eq("dom.locate.saved_survives_reload", saved_after_reload, saved_raw)
+            cookie_after_reload = page.evaluate("() => document.cookie")
+            ck.check(
+                "dom.locate.saved_cookie_survives_reload",
+                "supernav_saved_location=" in (cookie_after_reload or ""),
+                cookie_after_reload,
+            )
             # 恢复的定位起点 → 方式对比 端到端请求体
             page.fill("#point-input-1", "故宫博物院")
             with page.expect_response(lambda response: "/api/compare" in response.url and response.request.method == "POST") as compare_info:
@@ -402,6 +446,24 @@ def main(argv: list[str] | None = None) -> int:
                 "elements => elements.map(element => element.getAttribute('data-compare-mode'))",
             )
             ck.eq("dom.single_selected_card", len(selected_cards), 1)
+
+            # ---------------------------------------------------------- 3c. 375px 响应式（结果/对比卡可见时）
+            page.set_viewport_size({"width": 375, "height": 812})
+            page.wait_for_timeout(200)
+            overflow = page.evaluate(
+                "() => ({ doc: document.documentElement.scrollWidth, body: document.body.scrollWidth, inner: window.innerWidth })"
+            )
+            samples["responsive_375"] = overflow
+            ck.check(
+                "dom.responsive.375_no_horizontal_scroll",
+                overflow.get("doc", 9999) <= overflow.get("inner", 0) + 1
+                and overflow.get("body", 9999) <= overflow.get("inner", 0) + 1,
+                overflow,
+            )
+            ck.eq("dom.responsive.375_viewport_width", overflow.get("inner"), 375)
+            ck.eq("dom.responsive.375_cards", page.locator("#compare-grid [data-compare-mode]").count(), 5)
+            page.set_viewport_size({"width": 1440, "height": 1100})
+            page.wait_for_timeout(150)
 
             # ---------------------------------------------------------- 3b. 定位失败路径（权限拒绝 code=1）
             page.evaluate(
@@ -535,20 +597,42 @@ def main(argv: list[str] | None = None) -> int:
             page.click("#alert-dismiss")
             ck.eq("dom.validation.alert_dismissed", page.is_visible("#alert"), False)
 
-            # ---------------------------------------------------------- 7. 主题切换 + localStorage
-            page.click('[data-theme-choice="dark"]')
-            page.wait_for_function("() => document.documentElement.getAttribute('data-theme') === 'dark'", timeout=5000)
-            stored = page.evaluate("() => window.localStorage.getItem('supernav-theme')")
-            ck.eq("dom.theme.dark_applied", page.get_attribute("html", "data-theme"), "dark")
-            ck.eq("dom.theme.dark_stored", stored, "dark")
-            page.reload(wait_until="load")
+            # ---------------------------------------------------------- 7. 单主题补充 / 无外部请求 / 375 → 无 localStorage
+            ck.eq(
+                "dom.theme.no_data_theme_attr",
+                page.evaluate("() => document.documentElement.hasAttribute('data-theme') || document.body.hasAttribute('data-theme')"),
+                False,
+            )
+            ck.eq("dom.theme.no_localstorage_final", page.evaluate("() => window.localStorage.length"), 0)
+            # ?theme=dark 不应改变主题（模板要求不处理 ?theme=）
+            page.goto(base_url + "/?theme=dark", wait_until="load", timeout=30000)
             wait_app_ready(page)
-            ck.eq("dom.theme.persisted_after_reload", page.get_attribute("html", "data-theme"), "dark")
-            ck.eq("dom.theme.persisted_button", page.get_attribute('[data-theme-choice="dark"]', "aria-pressed"), "true")
-            page.click('[data-theme-choice="light"]')
-            page.wait_for_function("() => document.documentElement.getAttribute('data-theme') === 'light'", timeout=5000)
-            ck.eq("dom.theme.light_restored", page.evaluate("() => window.localStorage.getItem('supernav-theme')"), "light")
-            samples["theme"] = {"persisted_after_reload": "dark"}
+            ck.eq(
+                "dom.theme.query_param_bg",
+                page.evaluate("() => getComputedStyle(document.body).backgroundColor"),
+                "rgb(58, 63, 71)",
+            )
+            ck.eq(
+                "dom.theme.query_param_no_data_theme",
+                page.evaluate("() => document.documentElement.hasAttribute('data-theme')"),
+                False,
+            )
+            # 无外部请求；唯一 JS 为同源 app.js
+            external_requests = [
+                url
+                for url in requests_seen
+                if not url.startswith(base_url) and not url.startswith("data:") and not url.startswith("blob:")
+            ]
+            samples["external_requests"] = external_requests
+            samples["request_count"] = len(requests_seen)
+            ck.check("dom.network.no_external_requests", not external_requests, external_requests[:10])
+            script_requests = [url for url in requests_seen if url.split("?")[0].endswith(".js")]
+            ck.check(
+                "dom.network.only_same_origin_app_js",
+                bool(script_requests)
+                and all(url.startswith(base_url) and url.split("?")[0].endswith("/app.js") for url in script_requests),
+                script_requests,
+            )
 
             # ---------------------------------------------------------- 8. 控制台错误
             samples["console_errors"] = console_errors
